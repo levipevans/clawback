@@ -1,0 +1,192 @@
+"""Configuration: safe defaults, secrets only from the environment."""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+CONFIG_FILENAME = "config.toml"
+
+DEFAULT_CONFIG = '''\
+# Clawback configuration.
+#
+# Secrets are NEVER stored in this file. They come from environment variables:
+#   OPENROUTER_API_KEY          required for the model
+#   CLAWBACK_SMTP_HOST          optional, for the gated email tool
+#   CLAWBACK_SMTP_PORT          default 587
+#   CLAWBACK_SMTP_USER
+#   CLAWBACK_SMTP_PASSWORD
+#   CLAWBACK_SMTP_FROM
+#   CLAWBACK_SMTP_SECURITY      starttls | ssl
+#
+# The model can only see the Docker sandbox. `sandbox_dir` is the ONE folder
+# it may write to. Leave it unset to use <profile>\\workspace.
+
+model = "deepseek/deepseek-v4.1-flash-1017"
+
+# Mount the standard user folders (Desktop, Documents, Downloads, Pictures,
+# Music, Videos) read-only. Dotfiles and AppData are always excluded.
+include_standard_read_roots = true
+
+# Additional folders to mount read-only, e.g. "D:\\\\Research".
+extra_read_roots = []
+
+# Additional folders to mount read-write. Every write still requires your
+# confirmation, but adding a folder here makes it possible at all.
+extra_write_roots = []
+
+# Folders to hide even if they would otherwise be mounted. Hiding is enforced
+# with an empty read-only mount, not a path check.
+hidden_roots = []
+
+cycle_interval_minutes = 30
+interactive_approval_timeout_seconds = 120
+
+[budgets]
+# Hard limits for one wake cycle. When any limit is hit the cycle stops.
+max_seconds = 90
+max_tool_calls = 24
+max_model_rounds = 10
+tool_timeout_seconds = 30
+max_tool_output_bytes = 120000
+
+[email]
+# Email is off until you enable it and configure SMTP in the environment.
+# Every send still requires your explicit confirmation.
+enabled = false
+recipient = ""
+
+# Scheduled tasks are opt-in. A task without `enabled = true` never runs.
+[[tasks]]
+name = "workspace-check"
+enabled = false
+every_minutes = 60
+prompt = "List the files in /work and report anything that looks unfinished. Do not modify anything."
+'''
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+class Budgets(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_seconds: int = Field(default=90, ge=5, le=3600)
+    max_tool_calls: int = Field(default=24, ge=1, le=200)
+    max_model_rounds: int = Field(default=10, ge=1, le=50)
+    tool_timeout_seconds: int = Field(default=30, ge=1, le=600)
+    max_tool_output_bytes: int = Field(default=120_000, ge=1_000, le=5_000_000)
+
+
+class TaskConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    enabled: bool = False
+    every_minutes: int = Field(default=60, ge=1, le=10_080)
+    prompt: str = Field(min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def _simple_name(cls, value: str) -> str:
+        if not all(c.isalnum() or c in "-_" for c in value):
+            raise ValueError("task name may only contain letters, digits, '-' and '_'")
+        return value
+
+
+class EmailConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    recipient: str = ""
+
+    @field_validator("recipient")
+    @classmethod
+    def _looks_like_address(cls, value: str) -> str:
+        value = value.strip()
+        if value and "@" not in value:
+            raise ValueError("recipient must look like an email address")
+        return value
+
+
+class AppConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = DEFAULT_MODEL
+    sandbox_dir: str | None = None
+    include_standard_read_roots: bool = True
+    extra_read_roots: list[str] = Field(default_factory=list)
+    extra_write_roots: list[str] = Field(default_factory=list)
+    hidden_roots: list[str] = Field(default_factory=list)
+    cycle_interval_minutes: int = Field(default=30, ge=1, le=1440)
+    interactive_approval_timeout_seconds: int = Field(default=120, ge=5, le=3600)
+    budgets: Budgets = Field(default_factory=Budgets)
+    email: EmailConfig = Field(default_factory=EmailConfig)
+    tasks: list[TaskConfig] = Field(default_factory=list)
+
+    @field_validator("model")
+    @classmethod
+    def _model_not_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("model must not be empty")
+        return value.strip()
+
+    @field_validator("tasks")
+    @classmethod
+    def _unique_task_names(cls, tasks: list[TaskConfig]) -> list[TaskConfig]:
+        names = [t.name for t in tasks]
+        if len(names) != len(set(names)):
+            raise ValueError("task names must be unique")
+        return tasks
+
+
+def config_path(profile: Path) -> Path:
+    return profile / CONFIG_FILENAME
+
+
+def load_config(profile: Path) -> AppConfig:
+    path = config_path(profile)
+    if not path.exists():
+        path.write_text(DEFAULT_CONFIG, encoding="utf-8")
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    try:
+        return AppConfig(**raw)
+    except Exception as exc:  # pydantic ValidationError and friends
+        raise ConfigError(f"invalid configuration in {path}: {exc}") from exc
+
+
+def openrouter_api_key() -> str:
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not key:
+        raise ConfigError(
+            "OPENROUTER_API_KEY is not set. Set it as a Windows user environment "
+            "variable and restart the terminal."
+        )
+    return key
+
+
+def smtp_settings() -> dict[str, Any] | None:
+    host = os.environ.get("CLAWBACK_SMTP_HOST", "").strip()
+    if not host:
+        return None
+    try:
+        port = int(os.environ.get("CLAWBACK_SMTP_PORT", "587"))
+    except ValueError:
+        port = 587
+    return {
+        "host": host,
+        "port": port,
+        "user": os.environ.get("CLAWBACK_SMTP_USER", "").strip(),
+        "password": os.environ.get("CLAWBACK_SMTP_PASSWORD", ""),
+        "from_addr": os.environ.get("CLAWBACK_SMTP_FROM", "").strip(),
+        "security": os.environ.get("CLAWBACK_SMTP_SECURITY", "starttls").strip().lower(),
+    }
