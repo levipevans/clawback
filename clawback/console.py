@@ -34,7 +34,7 @@ class ConsoleUI:
         rt = self.runtime
         sandbox = "ready" if rt.sandbox_ok else "UNAVAILABLE (tools disabled)"
         body = (
-            f"[bold]Clawback {__version__}[/bold]  -  local assistant\n\n"
+            f"[bold]Gibity Skibbit[/bold]  -  Clawback {__version__}  -  local weirdo\n\n"
             f"profile    {rt.profile}\n"
             f"workspace  {rt.policy.sandbox}\n"
             f"model      {rt.config.model}\n"
@@ -47,7 +47,7 @@ class ConsoleUI:
         self.banner()
         while not self._quit:
             try:
-                line = input("clawback> ").strip()
+                line = input("gibity> ").strip()
             except (EOFError, KeyboardInterrupt):
                 self.console.print()
                 break
@@ -192,6 +192,8 @@ class ConsoleUI:
         table.add_column("k", style="bold")
         table.add_column("v", overflow="fold")
         table.add_row("status", snap.status.value + (f" - {snap.detail}" if snap.detail else ""))
+        table.add_row("assistant", "Gibity Skibbit")
+        table.add_row("human", "The Heisenberg")
         table.add_row("changed", _ts(snap.changed_at))
         table.add_row("model", self.runtime.config.model)
         table.add_row("sandbox", "ready" if self.runtime.sandbox_ok else "unavailable")

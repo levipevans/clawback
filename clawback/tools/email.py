@@ -75,7 +75,7 @@ class Mailer:
         address = _address(original.get("From", ""))
         if not self.can_send_to(address):
             raise EmailError(f"cannot reply to untrusted address {address!r}")
-        subject = str(original.get("Subject", "") or "Clawback")
+        subject = str(original.get("Subject", "") or "Gibity Skibbit")
         if not subject.lower().startswith("re:"):
             subject = f"Re: {subject}"
         headers: dict[str, str] = {}

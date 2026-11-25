@@ -1,7 +1,7 @@
 # Clawback
 
 <p align="center">
-  <img src="assets/logo.png" alt="Clawback logo: a grinning cartoon crab with its claws raised" width="220">
+  <img src="assets/logo.png" alt="Gibity Skibbit logo: a grinning cartoon crab with its claws raised" width="220">
 </p>
 
 
@@ -15,6 +15,9 @@ container whose mounts are the only filesystem it can see.
 
 This is deliberately not a plugin platform, not a broad system agent, and not a
 messaging hub. Version 1 is local-first and narrow.
+
+Clawback is the project. The assistant's proper name is **Gibity Skibbit**, a
+feral local weirdo with a toolbox. The human is **The Heisenberg**.
 
 ---
 
@@ -140,7 +143,7 @@ uv run python clawback.py run --no-tray
 Type a request at the prompt. `/help` lists commands.
 
 ```
-clawback> summarize the files in /work and tell me what is unfinished
+gibity> summarize the files in /work and tell me what is unfinished
 ```
 
 Consequential actions are shown with a preview (including a diff for writes)
