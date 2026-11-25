@@ -1,12 +1,13 @@
-**Run it:** `uv run python clawback.py run`
-
-<hr>
-
 # Clawback
 
 <p align="center">
   <img src="assets/logo.png" alt="Clawback logo: a grinning cartoon crab with its claws raised" width="220">
 </p>
+
+
+**Run it:** `uv run python clawback.py run`
+
+<hr>
 
 A small, security-first desktop assistant. Python, terminal-first, with a tray
 status icon. The model can *ask* for tools, but every tool runs inside a Docker
