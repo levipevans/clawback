@@ -144,6 +144,8 @@ Type a request at the prompt. `/help` lists commands.
 clawback> summarize the files in /work and tell me what is unfinished
 ```
 
+Ctrl+C cancels the current run and returns to the prompt. Press it again to quit.
+
 `run_bash` and `send_email` are the only actions that ask for confirmation.
 They are shown with a preview and require `y`:
 

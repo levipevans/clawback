@@ -113,6 +113,7 @@ class Scheduler:
             "wakeup.start", wake_id=wake_id, cycle_id=cycle_id, prompt=prompt[:300]
         )
         try:
+            self.runtime.cancel_event.clear()
             broker = ApprovalBroker(interactive=False, timeout_seconds=1.0)
             result = self.runtime.agent.run(
                 prompt,

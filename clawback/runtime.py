@@ -204,9 +204,14 @@ class Runtime:
             except OSError:
                 pass
             return result
+        except KeyboardInterrupt:
+            self.cancel_event.set()
+            raise
         finally:
-            self.subagent_manager.wait_all(timeout_seconds=5)
-            self.gate.release()
+            try:
+                self.subagent_manager.wait_all(timeout_seconds=5)
+            finally:
+                self.gate.release()
 
     def reset_conversation(self) -> None:
         self.conversation.reset()

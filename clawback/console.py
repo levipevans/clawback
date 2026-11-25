@@ -30,6 +30,7 @@ class ConsoleUI:
         self._active_broker: ApprovalBroker | None = None
         self._quit = False
         self._approval_lock = threading.Lock()
+        self._interrupt_armed = False
 
     # -- entrypoints ------------------------------------------------------
     def banner(self) -> None:
@@ -50,9 +51,20 @@ class ConsoleUI:
         while not self._quit:
             try:
                 line = input("clawback> ").strip()
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
                 self.console.print()
                 break
+            except KeyboardInterrupt:
+                if self._should_quit_on_interrupt():
+                    self.console.print("\n[yellow]quitting[/yellow]")
+                    break
+                self.runtime.cancel_event.set()
+                self.runtime.scheduler.stop_current()
+                self.console.print(
+                    "\n[dim](stopping current work; press Ctrl+C again to quit)[/dim]"
+                )
+                continue
+            self._interrupt_armed = False
             if not line:
                 continue
             if line.startswith("/"):
@@ -82,6 +94,18 @@ class ConsoleUI:
         except BusyError:
             self.console.print("[yellow]A scheduled cycle is running. Use /stop or try again.[/yellow]")
             return
+        except KeyboardInterrupt:
+            self.runtime.cancel_event.set()
+            if self._should_quit_on_interrupt():
+                self.console.print("\n[yellow]quitting[/yellow]")
+                self._quit = True
+                return
+            self.runtime.audit.record("agent.interrupted", mode="interactive")
+            self.console.print(
+                "\n[yellow]run cancelled; back at the prompt "
+                "(Ctrl+C again to quit).[/yellow]"
+            )
+            return
         except Exception as exc:
             self.console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
             return
@@ -96,6 +120,12 @@ class ConsoleUI:
 
     def _event(self, text: str) -> None:
         self.console.print(f"[dim]{text}[/dim]")
+
+    def _should_quit_on_interrupt(self) -> bool:
+        if self._interrupt_armed:
+            return True
+        self._interrupt_armed = True
+        return False
 
     def _prompt_approval(self, request: ApprovalRequest) -> None:
         with self._approval_lock:

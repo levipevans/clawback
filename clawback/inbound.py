@@ -532,6 +532,7 @@ class EmailInbox:
             if self.controller:
                 self.controller.set(Status.RUNNING, f"email from {message.from_addr}")
 
+            self.cancel_event.clear()
             result = self.agent.run(
                 self._prompt(message, trust),
                 mode="email",
