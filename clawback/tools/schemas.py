@@ -95,14 +95,43 @@ TOOLS: list[dict] = [
         ["url"],
     ),
     _fn(
-        "spawn_subagent",
-        "Delegate a task to a fresh sub-agent with the same tools and permissions "
-        "as you. Returns its findings. Depth and per-run count are capped.",
+        "spawn_subagents",
+        "Start 2-6 sub-agents in parallel. Returns immediately with a batch id "
+        "and one line per task. Each sub-agent has the same tools and permissions "
+        "as you. Use wait_subagents to collect results; subagent_status to check "
+        "progress.",
         {
-            "task": {"type": "string", "maxLength": 4000},
+            "tasks": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 4000},
+                "minItems": 2,
+                "maxItems": 6,
+            },
             "max_seconds": {"type": "integer", "minimum": 10, "maximum": 180, "default": 60},
         },
-        ["task"],
+        ["tasks"],
+    ),
+    _fn(
+        "wait_subagents",
+        "Wait for a sub-agent batch and return per-job status and results. "
+        "Use this when you actually need the findings.",
+        {
+            "batch_id": {"type": "string", "maxLength": 32},
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 300,
+                "default": 60,
+            },
+        },
+        ["batch_id"],
+    ),
+    _fn(
+        "subagent_status",
+        "Show live sub-agent status (running/done/error) without blocking. "
+        "Omit batch_id for recent jobs.",
+        {"batch_id": {"type": ["string", "null"]}},
+        [],
     ),
     _fn(
         "schedule_wakeup",

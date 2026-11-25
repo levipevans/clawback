@@ -61,6 +61,11 @@ class Tray:
                 lambda icon, item: None,
                 enabled=False,
             ),
+            pystray.MenuItem(
+                lambda item: f"Subagents: {self.runtime.subagent_manager.running_count()} running",
+                lambda icon, item: None,
+                enabled=False,
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 "Pause",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime
 
@@ -28,6 +29,7 @@ class ConsoleUI:
         self.console = Console()
         self._active_broker: ApprovalBroker | None = None
         self._quit = False
+        self._approval_lock = threading.Lock()
 
     # -- entrypoints ------------------------------------------------------
     def banner(self) -> None:
@@ -96,18 +98,19 @@ class ConsoleUI:
         self.console.print(f"[dim]{text}[/dim]")
 
     def _prompt_approval(self, request: ApprovalRequest) -> None:
-        self.console.print(
-            Panel(
-                request.preview,
-                title=f"Confirm: {request.tool}  (id {request.id})",
-                border_style="yellow",
+        with self._approval_lock:
+            self.console.print(
+                Panel(
+                    request.preview,
+                    title=f"Confirm: {request.tool}  (id {request.id})",
+                    border_style="yellow",
+                )
             )
-        )
-        try:
-            answer = input("Approve? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = "n"
-        broker = self._active_broker
+            try:
+                answer = input("Approve? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+            broker = self._active_broker
         if broker is None:
             return
         if answer in ("y", "yes"):
@@ -138,6 +141,7 @@ class ConsoleUI:
             "memory": self._cmd_memory,
             "remember": self._cmd_remember,
             "wakeups": self._cmd_wakeups,
+            "subagents": self._cmd_subagents,
             "email": self._cmd_email,
             "new": self._cmd_new,
             "wipe": self._cmd_wipe,
@@ -176,6 +180,7 @@ class ConsoleUI:
             ("/memory [show|clear|reset|path]", "long-term memory file"),
             ("/remember TEXT", "add a note to memory"),
             ("/wakeups [list|clear]", "scheduled wake-ups"),
+            ("/subagents", "live sub-agent status"),
             ("/email [status|check|poll]", "inbound email status, connectivity, one poll"),
             ("/new", "clear this session's conversation context"),
             ("/log [n]", "recent activity"),
@@ -202,6 +207,7 @@ class ConsoleUI:
         table.add_row("writable grants", f"{len(self.runtime.policy.writable_roots())} (outside /work)")
         table.add_row("memory", f"{self.runtime.memory.size()} bytes")
         table.add_row("wakeups", str(len(self.runtime.state.wakeups())))
+        table.add_row("subagents", f"{self.runtime.subagent_manager.running_count()} running")
         enabled = sum(
             1
             for t in self.runtime.config.tasks
@@ -359,6 +365,29 @@ class ConsoleUI:
         self.runtime.memory.append_note(rest)
         self.runtime.audit.record("memory.note")
         self.console.print("noted in memory")
+
+    def _cmd_subagents(self, _rest: str = "") -> None:
+        payload = self.runtime.subagent_manager.status()
+        jobs = payload.get("jobs", [])
+        if not jobs:
+            self.console.print("[dim]no sub-agents yet[/dim]")
+            return
+        table = Table(title="subagents")
+        table.add_column("id")
+        table.add_column("status")
+        table.add_column("task", overflow="fold")
+        table.add_column("time")
+        table.add_column("result", overflow="fold")
+        for job in jobs:
+            detail = str(job.get("result") or job.get("error") or "")
+            table.add_row(
+                str(job.get("id", "?")),
+                str(job.get("status", "?")),
+                str(job.get("task", ""))[:80],
+                f"{job.get('duration', 0)}s",
+                detail[:100],
+            )
+        self.console.print(table)
 
     def _cmd_wakeups(self, rest: str = "") -> None:
         action = (rest or "list").strip().lower()

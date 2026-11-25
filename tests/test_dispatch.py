@@ -20,7 +20,34 @@ class DenyingBroker:
         return ApprovalResult(False, "owner_denied", "req", "digest")
 
 
-def _dispatcher(policy, sandbox, audit, mailer, memory=None, state=None, llm=None, subagent_runner=None):
+class FakeSubagentManager:
+    def __init__(self):
+        self.calls: list[tuple[list[str], dict]] = []
+
+    def start_batch(self, tasks, **kwargs):
+        self.calls.append((list(tasks), dict(kwargs)))
+        jobs = []
+        for index, task in enumerate(tasks, 1):
+            job = type("Job", (), {})()
+            job.id = f"job{index}"
+            job.index = index
+            job.total = len(tasks)
+            job.task = task
+            job.status = "running"
+            jobs.append(job)
+        return "batch1", jobs
+
+    def wait_batch(self, batch_id, timeout_seconds=60):
+        return {"ok": True, "batch_id": batch_id, "done": True, "jobs": []}
+
+    def status(self, batch_id=None):
+        return {"ok": True, "running": 0, "jobs": []}
+
+    def running_count(self):
+        return 0
+
+
+def _dispatcher(policy, sandbox, audit, mailer, memory=None, state=None, llm=None, subagent_manager=None):
     return ToolDispatcher(
         policy=policy,
         sandbox=sandbox,
@@ -30,7 +57,7 @@ def _dispatcher(policy, sandbox, audit, mailer, memory=None, state=None, llm=Non
         memory=memory,
         state=state,
         llm=llm,
-        subagent_runner=subagent_runner,
+        subagent_manager=subagent_manager,
         on_event=None,
     )
 
@@ -342,39 +369,48 @@ def test_web_fetch_rejects_localhost(policy, audit):
     assert outcome.decision == "error"
 
 
-def test_spawn_subagent_gets_parent_permissions(policy, audit):
+def test_spawn_subagents_gets_parent_permissions(policy, audit):
     from tests.helpers import FakeMailer, FakeSandbox
 
-    calls: dict = {}
-
-    def runner(task, max_seconds, deadline, depth, mode, broker):
-        calls.update(
-            {
-                "task": task,
-                "max_seconds": max_seconds,
-                "depth": depth,
-                "mode": mode,
-                "broker": broker,
-            }
-        )
-        return {"ok": True, "text": "findings", "tools": ["web_search"]}
-
-    dispatcher = _dispatcher(policy, FakeSandbox(), audit, FakeMailer(), subagent_runner=runner)
+    manager = FakeSubagentManager()
+    dispatcher = _dispatcher(
+        policy, FakeSandbox(), audit, FakeMailer(), subagent_manager=manager
+    )
     outcome = dispatcher.execute(
-        "spawn_subagent",
-        {"task": "research x", "max_seconds": 20},
+        "spawn_subagents",
+        {"tasks": ["research a", "research b"], "max_seconds": 20},
         broker=ApprovingBroker(),
         cycle_id="c1",
         mode="interactive",
     )
     assert outcome.ok is True
-    assert calls["task"] == "research x"
-    assert calls["depth"] == 1
-    assert calls["mode"] == "interactive"
-    assert calls["broker"].__class__ is ApprovingBroker
+    tasks, kwargs = manager.calls[0]
+    assert tasks == ["research a", "research b"]
+    assert kwargs["depth"] == 1
+    assert kwargs["permission_mode"] == "interactive"
+    assert kwargs["broker"].__class__ is ApprovingBroker
+    payload = json.loads(outcome.content)
+    assert payload["batch_id"] == "batch1"
+    assert len(payload["jobs"]) == 2
 
 
-def test_spawn_subagent_is_hidden_at_max_depth(policy, audit):
+def test_spawn_subagents_requires_at_least_two(policy, audit):
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    dispatcher = _dispatcher(
+        policy, FakeSandbox(), audit, FakeMailer(), subagent_manager=FakeSubagentManager()
+    )
+    outcome = dispatcher.execute(
+        "spawn_subagents",
+        {"tasks": ["only one"]},
+        broker=ApprovingBroker(),
+        cycle_id="c1",
+        mode="interactive",
+    )
+    assert outcome.decision == "error"
+
+
+def test_spawn_subagents_is_hidden_at_max_depth(policy, audit):
     from tests.helpers import FakeMailer, FakeSandbox
 
     dispatcher = ToolDispatcher(
@@ -383,8 +419,9 @@ def test_spawn_subagent_is_hidden_at_max_depth(policy, audit):
         audit=audit,
         config=AppConfig(),
         mailer=FakeMailer(),
-        subagent_runner=lambda *a, **k: {"ok": True},
+        subagent_manager=FakeSubagentManager(),
         depth=AppConfig().budgets.max_subagent_depth,
     )
     names = {spec["function"]["name"] for spec in dispatcher.tool_specs()}
-    assert "spawn_subagent" not in names
+    assert "spawn_subagents" not in names
+    assert "wait_subagents" in names

@@ -21,6 +21,7 @@ from .policy import Policy, build_policy
 from .sandbox.docker import DockerSandbox, SandboxUnavailable
 from .scheduler import Scheduler
 from .state import StateStore
+from .subagents import SubagentManager
 from .tools.dispatch import ToolDispatcher
 from .tools.email import Mailer, build_mailer
 
@@ -55,6 +56,7 @@ class Runtime:
         self.policy: Policy
         self.sandbox: DockerSandbox
         self.dispatcher: ToolDispatcher
+        self.subagent_manager = SubagentManager(self._run_subagent, on_event=self._emit)
         self._build_environment()
         self.scheduler = Scheduler(self, on_event=lambda text: self._emit(text))
 
@@ -70,6 +72,7 @@ class Runtime:
             mailer=self.mailer,
             memory=self.memory,
             state=self.state,
+            subagent_manager=self.subagent_manager,
             on_event=self._emit,
         )
 
@@ -99,7 +102,6 @@ class Runtime:
         )
         self.dispatcher.llm = self.llm
         self.dispatcher.state = self.state
-        self.dispatcher.subagent_runner = self._run_subagent
         self.audit.record("app.connect", model=self.config.model)
 
     def start_inbox(self) -> bool:
@@ -151,7 +153,7 @@ class Runtime:
                     memory=self.memory,
                     state=self.state,
                     llm=self.llm,
-                    subagent_runner=self._run_subagent,
+                    subagent_manager=self.subagent_manager,
                     on_event=self._emit,
                 )
                 if self.agent is not None:
@@ -196,6 +198,7 @@ class Runtime:
                 pass
             return result
         finally:
+            self.subagent_manager.wait_all(timeout_seconds=5)
             self.gate.release()
 
     def reset_conversation(self) -> None:
@@ -224,7 +227,7 @@ class Runtime:
             memory=self.memory,
             state=self.state,
             llm=self.llm,
-            subagent_runner=self._run_subagent,
+            subagent_manager=self.subagent_manager,
             depth=depth,
             on_event=self._emit,
         )
@@ -277,6 +280,10 @@ class Runtime:
         try:
             if self.inbox is not None:
                 self.inbox.stop()
+        except Exception:
+            pass
+        try:
+            self.subagent_manager.wait_all(timeout_seconds=5)
         except Exception:
             pass
         try:

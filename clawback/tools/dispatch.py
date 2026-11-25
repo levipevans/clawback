@@ -19,6 +19,7 @@ from ..memory import MemoryStore
 from ..policy import Policy, PolicyError
 from ..sandbox.docker import DockerSandbox
 from ..state import StateStore
+from ..subagents import SubagentManager
 from ..web import WebError, fetch_url
 from . import schemas
 from .email import EmailError, Mailer
@@ -62,7 +63,7 @@ class ToolDispatcher:
         memory: MemoryStore | None = None,
         state: StateStore | None = None,
         llm: OpenRouterClient | None = None,
-        subagent_runner: Callable | None = None,
+        subagent_manager: SubagentManager | None = None,
         depth: int = 0,
         on_event: EventFn | None = None,
     ):
@@ -74,23 +75,39 @@ class ToolDispatcher:
         self.memory = memory
         self.state = state
         self.llm = llm
-        self.subagent_runner = subagent_runner
+        self.subagent_manager = subagent_manager
         self.depth = max(0, int(depth))
         self._subagent_count = 0
+        self._batch_ids: list[str] = []
         self.on_event = on_event
 
     def begin_run(self) -> None:
         self._subagent_count = 0
+        self._batch_ids.clear()
+
+    def finish_run(self, deadline: float | None = None) -> None:
+        if self.subagent_manager is None or not self._batch_ids:
+            return
+        timeout = 5.0
+        if deadline is not None:
+            timeout = max(1.0, min(30.0, deadline - time.monotonic() + 5.0))
+        overall = time.monotonic() + timeout
+        for batch_id in list(self._batch_ids):
+            remaining = max(0.5, overall - time.monotonic())
+            self.subagent_manager.wait_batch(batch_id, remaining)
+        self._batch_ids.clear()
 
     # -- model-facing specs ----------------------------------------------
     def _spec_map(self, mode: str) -> dict[str, dict]:
         include_email = self._email_enabled() and mode != "email"
         specs = schemas.by_name(include_email)
         if (
-            self.subagent_runner is None
-            or self.depth >= self.config.budgets.max_subagent_depth
+            self.subagent_manager is None
         ):
-            specs.pop("spawn_subagent", None)
+            for tool_name in ("spawn_subagents", "wait_subagents", "subagent_status"):
+                specs.pop(tool_name, None)
+        elif self.depth >= self.config.budgets.max_subagent_depth:
+            specs.pop("spawn_subagents", None)
         if self.state is None:
             specs.pop("schedule_wakeup", None)
         if self.llm is None:
@@ -142,6 +159,9 @@ class ToolDispatcher:
                 [],
             )
 
+        if self.on_event:
+            detail = self._event_detail(name, args)
+            self.on_event(f"-> {name} {detail}".strip())
         if name in ("read_memory", "append_memory"):
             return self._memory_tool(name, args, cycle_id, mode, started)
         if name == "web_search":
@@ -150,8 +170,12 @@ class ToolDispatcher:
             return self._web_fetch(args, cycle_id, mode, started)
         if name == "schedule_wakeup":
             return self._schedule_wakeup(args, cycle_id, mode, started)
-        if name == "spawn_subagent":
-            return self._spawn_subagent(args, broker, deadline, cycle_id, mode, started)
+        if name == "spawn_subagents":
+            return self._spawn_subagents(args, broker, deadline, cycle_id, mode, started)
+        if name == "wait_subagents":
+            return self._wait_subagents(args, cycle_id, mode, started)
+        if name == "subagent_status":
+            return self._subagent_status(args, cycle_id, mode, started)
 
         scopes: list[str] = []
         try:
@@ -304,7 +328,7 @@ class ToolDispatcher:
             )
         return self._finish("web_fetch", args, "allow", payload, started, cycle_id, mode, ["web"])
 
-    def _spawn_subagent(
+    def _spawn_subagents(
         self,
         args: dict,
         broker: ApprovalBroker,
@@ -313,21 +337,44 @@ class ToolDispatcher:
         mode: str,
         started: float,
     ) -> ToolOutcome:
-        task = str(args.get("task", "")).strip()
-        if not task or len(task) > 4_000:
+        tasks = args.get("tasks")
+        if not isinstance(tasks, list) or len(tasks) < 2:
             return self._finish(
-                "spawn_subagent",
+                "spawn_subagents",
                 args,
                 "error",
-                {"ok": False, "error": "task_required"},
+                {"ok": False, "error": "at_least_two_tasks_required"},
                 started,
                 cycle_id,
                 mode,
                 ["subagent"],
             )
-        if self.subagent_runner is None:
+        if len(tasks) > 6:
             return self._finish(
-                "spawn_subagent",
+                "spawn_subagents",
+                args,
+                "error",
+                {"ok": False, "error": "at_most_six_tasks"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        cleaned = [str(task).strip() for task in tasks if str(task).strip()]
+        if len(cleaned) < 2:
+            return self._finish(
+                "spawn_subagents",
+                args,
+                "error",
+                {"ok": False, "error": "at_least_two_nonempty_tasks"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        if self.subagent_manager is None:
+            return self._finish(
+                "spawn_subagents",
                 args,
                 "error",
                 {"ok": False, "error": "subagent_unavailable"},
@@ -338,7 +385,7 @@ class ToolDispatcher:
             )
         if self.depth >= self.config.budgets.max_subagent_depth:
             return self._finish(
-                "spawn_subagent",
+                "spawn_subagents",
                 args,
                 "error",
                 {"ok": False, "error": "max_subagent_depth"},
@@ -347,12 +394,13 @@ class ToolDispatcher:
                 mode,
                 ["subagent"],
             )
-        if self._subagent_count >= self.config.budgets.max_subagents:
+        remaining = self.config.budgets.max_subagents - self._subagent_count
+        if len(cleaned) > remaining:
             return self._finish(
-                "spawn_subagent",
+                "spawn_subagents",
                 args,
                 "error",
-                {"ok": False, "error": "max_subagents_reached"},
+                {"ok": False, "error": "max_subagents_reached", "remaining": max(0, remaining)},
                 started,
                 cycle_id,
                 mode,
@@ -363,26 +411,115 @@ class ToolDispatcher:
         except (TypeError, ValueError):
             max_seconds = self.config.budgets.subagent_seconds
         max_seconds = max(10, min(max_seconds, 180))
-        self._subagent_count += 1
         try:
-            payload = self.subagent_runner(
-                task, max_seconds, deadline, self.depth + 1, mode, broker
+            batch_id, jobs = self.subagent_manager.start_batch(
+                cleaned,
+                max_seconds=max_seconds,
+                parent_deadline=deadline,
+                depth=self.depth + 1,
+                permission_mode=mode,
+                broker=broker,
             )
-        except Exception as exc:
+        except ValueError as exc:
             return self._finish(
-                "spawn_subagent",
+                "spawn_subagents",
                 args,
                 "error",
-                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                {"ok": False, "error": str(exc)},
                 started,
                 cycle_id,
                 mode,
                 ["subagent"],
             )
-        if not isinstance(payload, dict):
-            payload = {"ok": True, "text": str(payload)}
+        self._subagent_count += len(cleaned)
+        self._batch_ids.append(batch_id)
+        payload = {
+            "ok": True,
+            "batch_id": batch_id,
+            "jobs": [
+                {
+                    "id": job.id,
+                    "index": job.index,
+                    "total": job.total,
+                    "task": job.task,
+                    "status": job.status,
+                }
+                for job in jobs
+            ],
+            "note": (
+                "Started in parallel. Continue with other work, then call "
+                "wait_subagents(batch_id) to collect results."
+            ),
+        }
         return self._finish(
-            "spawn_subagent", args, "allow", payload, started, cycle_id, mode, ["subagent"]
+            "spawn_subagents", args, "allow", payload, started, cycle_id, mode, ["subagent"]
+        )
+
+    def _wait_subagents(
+        self, args: dict, cycle_id: str, mode: str, started: float
+    ) -> ToolOutcome:
+        if self.subagent_manager is None:
+            return self._finish(
+                "wait_subagents",
+                args,
+                "error",
+                {"ok": False, "error": "subagent_unavailable"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        batch_id = str(args.get("batch_id", "")).strip()
+        if not batch_id:
+            return self._finish(
+                "wait_subagents",
+                args,
+                "error",
+                {"ok": False, "error": "batch_id_required"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        try:
+            timeout = int(args.get("timeout_seconds", 60))
+        except (TypeError, ValueError):
+            timeout = 60
+        timeout = max(1, min(timeout, 300))
+        payload = self.subagent_manager.wait_batch(batch_id, timeout)
+        if not payload.get("jobs"):
+            return self._finish(
+                "wait_subagents",
+                args,
+                "error",
+                {"ok": False, "error": "unknown_batch"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        return self._finish(
+            "wait_subagents", args, "allow", payload, started, cycle_id, mode, ["subagent"]
+        )
+
+    def _subagent_status(
+        self, args: dict, cycle_id: str, mode: str, started: float
+    ) -> ToolOutcome:
+        if self.subagent_manager is None:
+            return self._finish(
+                "subagent_status",
+                args,
+                "error",
+                {"ok": False, "error": "subagent_unavailable"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        batch_id = args.get("batch_id") or None
+        payload = self.subagent_manager.status(batch_id)
+        return self._finish(
+            "subagent_status", args, "allow", payload, started, cycle_id, mode, ["subagent"]
         )
 
     def _schedule_wakeup(
@@ -670,17 +807,60 @@ class ToolDispatcher:
         return f"{name} {json.dumps(args, ensure_ascii=False)[:2000]}"
 
     @staticmethod
+    def _event_detail(name: str, args: dict) -> str:
+        if name in (
+            "read_file",
+            "write_file",
+            "append_file",
+            "make_dir",
+            "delete_path",
+            "file_info",
+            "list_dir",
+            "search_files",
+        ):
+            return str(args.get("path", ""))[:160]
+        if name in ("move_path", "copy_path"):
+            return f"{args.get('src')} -> {args.get('dst')}"[:200]
+        if name == "run_bash":
+            return str(args.get("command", ""))[:160]
+        if name == "web_search":
+            return str(args.get("query", ""))[:160]
+        if name == "web_fetch":
+            return str(args.get("url", ""))[:160]
+        if name == "spawn_subagents":
+            tasks = args.get("tasks") if isinstance(args.get("tasks"), list) else []
+            return f"{len(tasks)} tasks"
+        if name == "wait_subagents":
+            return str(args.get("batch_id", ""))
+        if name == "subagent_status":
+            return str(args.get("batch_id", "") or "recent")
+        if name == "schedule_wakeup":
+            return f"{args.get('delay_minutes')}m"
+        if name == "send_email":
+            return str(args.get("to", ""))
+        return ""
+
+    @staticmethod
     def _audit_args(name: str, args: dict) -> dict:
         """Keep the activity log concise: metadata, not file/email contents."""
         if name == "web_search":
             return {"query": str(args.get("query", ""))[:200], "max_results": args.get("max_results")}
         if name == "web_fetch":
             return {"url": str(args.get("url", ""))[:500]}
-        if name == "spawn_subagent":
+        if name == "spawn_subagents":
+            tasks = args.get("tasks") if isinstance(args.get("tasks"), list) else []
             return {
-                "task": str(args.get("task", ""))[:200],
+                "count": len(tasks),
+                "tasks": [str(task)[:80] for task in tasks[:6]],
                 "max_seconds": args.get("max_seconds"),
             }
+        if name == "wait_subagents":
+            return {
+                "batch_id": args.get("batch_id"),
+                "timeout_seconds": args.get("timeout_seconds"),
+            }
+        if name == "subagent_status":
+            return {"batch_id": args.get("batch_id")}
         if name == "schedule_wakeup":
             return {
                 "delay_minutes": args.get("delay_minutes"),
@@ -729,7 +909,7 @@ class ToolDispatcher:
             duration_ms=round(duration * 1000),
             scopes=scopes,
         )
-        if self.on_event:
+        if self.on_event and not success:
             marker = "ok" if success else decision
             self.on_event(f"{name} [{marker}] {round(duration, 2)}s")
         return ToolOutcome(

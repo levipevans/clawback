@@ -174,6 +174,7 @@ Approve? [y/N]
 | `/memory [show\|clear\|reset\|path]` | long-term memory file |
 | `/remember TEXT` | add a note to memory |
 | `/wakeups [list\|clear]` | scheduled wake-ups |
+| `/subagents` | live sub-agent status |
 | `/email [status\|check\|poll]` | inbound email status, connectivity, one poll |
 | `/new` | clear this session's conversation context |
 | `/log [n]` | recent activity |
@@ -237,8 +238,8 @@ uv run python clawback.py tasks enable workspace-check
 * **Confirmation-gated** tools are `run_bash` and `send_email`.
 * `web_search` and `web_fetch` are read-only host tools. The Docker sandbox
   remains offline; only these host helpers reach the network.
-* `spawn_subagent` inherits the caller's tools and approval broker. Recursion
-  and per-run counts are capped.
+* `spawn_subagents` starts 2-6 parallel sub-agents that inherit the caller's
+  tools and approval broker. Depth and per-run counts are capped.
 * `schedule_wakeup` is a host-side scheduling action. Wake-ups run in `wakeup`
   mode: file writes and web tools are allowed; shell and email are refused.
 * **Terminal sessions** prompt for `run_bash` and `send_email`. An approval is
@@ -302,11 +303,26 @@ access. Web tools run on the host; the container stays offline.
 |---|---|
 | `web_search` | Search the public web via OpenRouter's web plugin. Returns a summary plus source URLs. Uses the existing OpenRouter key; no extra search key. |
 | `web_fetch` | Fetch a public http(s) URL and return text. Private/local/credentialed URLs and redirects into private space are refused; responses are size-capped. |
-| `spawn_subagent` | Delegate a task to a fresh agent with the **same tools and permissions as its parent**. Depth and per-run count are capped. |
+| `spawn_subagents` | Start **2-6 sub-agents in parallel**. Returns immediately with a batch id and one line per task. Each sub-agent has the same tools and permissions as its parent. |
+| `wait_subagents` | Wait for a batch and return per-job status/results. Use it when you actually need the findings. |
+| `subagent_status` | Non-blocking live status (running/done/error) for recent jobs. |
 | `schedule_wakeup` | Persist a wake-up with a self-contained prompt. The current run ends; the scheduler starts a new run later. |
 
 Web pages, search results, and sub-agent output are untrusted data. The model is
 told not to follow instructions found in them.
+
+`spawn_subagents` is asynchronous: the parent keeps working while the batch
+runs, then calls `wait_subagents(batch_id)` to collect. Start lines print one
+per sub-agent, and `/subagents` shows live status:
+
+```
+subagent 1/3 started: research the release timeline
+subagent 2/3 started: compare the security notes
+subagent 3/3 started: find independent coverage
+```
+
+Console: `/subagents` (id, status, task, duration, result preview). The tray
+menu also shows the running count.
 
 ### Wake-ups
 
@@ -324,8 +340,9 @@ Console: `/wakeups`, `/wakeups clear`.
 
 A research pattern:
 
-> Research X. Delegate two independent angles to sub-agents, write the combined
-> notes to `/work/research.md`, then schedule a wake-up in 30 minutes to continue.
+> Research X. Start 3 parallel sub-agents for independent angles, wait for the
+> batch, write the combined notes to `/work/research.md`, then schedule a
+> wake-up in 30 minutes to continue.
 
 ### Sub-agents and permissions
 
@@ -333,11 +350,12 @@ A sub-agent gets the same tools and the same approval broker as its parent. In a
 terminal session, a sub-agent's `run_bash` still prompts; in an email session,
 shell is refused; file writes inside writable roots are allowed. Recursion is
 bounded by `max_subagent_depth` (default 3) and `max_subagents` per run (default
-3), with a per-sub-agent time cap (`subagent_seconds`, default 60).
+6), with a per-sub-agent time cap (`subagent_seconds`, default 60). At most 12
+sub-agents run at once across the tree.
 
 ```toml
 [budgets]
-max_subagents = 3
+max_subagents = 6
 max_subagent_depth = 3
 subagent_seconds = 60
 ```
@@ -510,7 +528,7 @@ terminal / tray
   Agent loop  ──► OpenRouter (web plugin for web_search)
       |  ^
       |  └── Conversation (session) + memory.md (long-term)
-      |      └── spawn_subagent ──► nested Agent (same tools/permissions)
+      |      └── spawn_subagents ──► parallel Agents (same tools/permissions)
       v
   ToolDispatcher
       | validate args (jsonschema)

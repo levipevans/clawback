@@ -60,7 +60,7 @@ max_model_rounds = 10
 tool_timeout_seconds = 30
 max_tool_output_bytes = 120000
 # Research helpers
-max_subagents = 3
+max_subagents = 6
 max_subagent_depth = 3
 subagent_seconds = 60
 
@@ -114,7 +114,7 @@ class Budgets(BaseModel):
     max_model_rounds: int = Field(default=10, ge=1, le=50)
     tool_timeout_seconds: int = Field(default=30, ge=1, le=600)
     max_tool_output_bytes: int = Field(default=120_000, ge=1_000, le=5_000_000)
-    max_subagents: int = Field(default=3, ge=1, le=20)
+    max_subagents: int = Field(default=6, ge=1, le=20)
     max_subagent_depth: int = Field(default=3, ge=1, le=10)
     subagent_seconds: int = Field(default=60, ge=10, le=300)
 
