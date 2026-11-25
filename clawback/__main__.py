@@ -80,8 +80,6 @@ def cmd_status(_args: argparse.Namespace) -> int:
     runtime = Runtime()
     status = runtime.sandbox.status()
     rows = [
-        ("assistant", "Gibity Skibbit"),
-        ("human", "The Heisenberg"),
         ("profile", str(runtime.profile)),
         ("config", str(runtime.config_path)),
         ("workspace", str(runtime.policy.sandbox)),
@@ -98,7 +96,7 @@ def cmd_status(_args: argparse.Namespace) -> int:
         ("docker", "available" if status.get("available") else "unavailable"),
         ("sandbox", "running" if status.get("running") else "not running"),
     ]
-    _table(rows, f"Gibity Skibbit  -  Clawback {__version__}")
+    _table(rows, f"Clawback {__version__}")
     return 0
 
 

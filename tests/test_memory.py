@@ -36,7 +36,7 @@ def test_memory_append_and_context(tmp_path):
     memory = MemoryStore(tmp_path / "memory.md")
     memory.append_interaction("please summarize /work", "It has two files.", ["list_dir", "read_file"])
     text = memory.read()
-    assert "Gibity Skibbit's memory" in text
+    assert "# Clawback memory" in text
     assert "please summarize /work" in text
     assert "It has two files." in text
     assert "list_dir, read_file" in text
@@ -53,7 +53,7 @@ def test_memory_assistant_append(tmp_path):
     memory = MemoryStore(tmp_path / "memory.md")
     memory.append_assistant("The owner prefers tea over coffee.")
     text = memory.read()
-    assert "Gibity Skibbit" in text
+    assert "(assistant)" in text
     assert "The owner prefers tea over coffee." in text
 
 

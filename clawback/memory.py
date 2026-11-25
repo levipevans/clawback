@@ -17,11 +17,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .persona import ASSISTANT_NAME, USER_NAME
-
 MEMORY_FILENAME = "memory.md"
 
-HEADER = f"""# {ASSISTANT_NAME}'s memory
+HEADER = """# Clawback memory
 
 This file is maintained locally by Clawback. It is injected into the model's
 context as untrusted data. Delete it to forget everything, or edit it by hand.
@@ -100,7 +98,7 @@ class MemoryStore:
     def append(self, entry: str) -> None:
         with self._lock:
             text = self.read()
-            if not text.lstrip().startswith("#"):
+            if not text.startswith("# Clawback memory"):
                 text = HEADER + text
             text = text.rstrip() + "\n\n" + entry.strip() + "\n"
             self._write(self._trim(text))
@@ -117,19 +115,19 @@ class MemoryStore:
         tools_text = ", ".join(tools) if tools else "none"
         entry = (
             f"## {stamp} ({mode})\n"
-            f"- **{USER_NAME}:** {_clip(user, 300)}\n"
-            f"- **{ASSISTANT_NAME}:** {_clip(assistant, 600)}\n"
+            f"- **You:** {_clip(user, 300)}\n"
+            f"- **Clawback:** {_clip(assistant, 600)}\n"
             f"- **Tools:** {tools_text}"
         )
         self.append(entry)
 
     def append_note(self, text: str) -> None:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        self.append(f"## {stamp} (note)\n- **{USER_NAME}:** {_clip(text, 2000)}")
+        self.append(f"## {stamp} (note)\n- **You:** {_clip(text, 2000)}")
 
     def append_assistant(self, text: str) -> None:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        self.append(f"## {stamp} ({ASSISTANT_NAME})\n- **{ASSISTANT_NAME}:** {_clip(text, 4000)}")
+        self.append(f"## {stamp} (assistant)\n- **Clawback:** {_clip(text, 4000)}")
 
     def clear(self) -> None:
         with self._lock:

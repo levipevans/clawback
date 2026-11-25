@@ -57,7 +57,7 @@ class Tray:
         snapshot = self.runtime.controller.snapshot()
         menu = pystray.Menu(
             pystray.MenuItem(
-                lambda item: f"Gibity Skibbit: {self.runtime.controller.snapshot().status.value}",
+                lambda item: f"Clawback: {self.runtime.controller.snapshot().status.value}",
                 lambda icon, item: None,
                 enabled=False,
             ),
@@ -81,9 +81,9 @@ class Tray:
             pystray.MenuItem("Quit", self._quit),
         )
         self._icon = pystray.Icon(
-            "gibity-skibbit",
+            "clawback",
             _image(_COLORS.get(snapshot.status, (150, 150, 150))),
-            f"Gibity Skibbit - {snapshot.status.value}",
+            f"Clawback - {snapshot.status.value}",
             menu,
         )
         self.runtime.controller.subscribe(self._on_status)
@@ -123,7 +123,7 @@ class Tray:
             return
         try:
             icon.icon = _image(_COLORS.get(snapshot.status, (150, 150, 150)))
-            icon.title = f"Gibity Skibbit - {snapshot.status.value}"
+            icon.title = f"Clawback - {snapshot.status.value}"
             icon.update_menu()
         except Exception:
             pass
