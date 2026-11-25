@@ -125,6 +125,10 @@ class MemoryStore:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         self.append(f"## {stamp} (note)\n- **You:** {_clip(text, 2000)}")
 
+    def append_assistant(self, text: str) -> None:
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self.append(f"## {stamp} (assistant)\n- **Clawback:** {_clip(text, 4000)}")
+
     def clear(self) -> None:
         with self._lock:
             try:

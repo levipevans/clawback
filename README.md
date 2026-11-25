@@ -260,8 +260,16 @@ conversation history, so follow-up questions work. `/new` clears it.
 file. After each interaction -- interactive or scheduled -- the host appends a
 short entry: time, mode, your request, its answer, and the tools used. At the
 start of each run the most recent portion is injected into the system prompt
-inside a data block. The model has no tool that writes this file; the host owns
-it, so a prompt-injected document cannot silently rewrite memory.
+inside a data block.
+
+The model can also read and write it explicitly:
+
+* `read_memory` -- read the file (optionally capped).
+* `append_memory` -- append a note when you ask it to remember something.
+
+Both are host-side tools scoped to `memory.md` only: no path argument, no access
+to project files, appends capped at 4 KB, and every call audited. Memory content
+is still treated as untrusted data by the model.
 
 * `/memory` or `uv run python clawback.py memory show` -- read it.
 * `/memory clear` or `uv run python clawback.py memory clear` -- forget everything.

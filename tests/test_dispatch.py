@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from clawback.approvals import ApprovalResult
 from clawback.config import AppConfig
+from clawback.memory import MemoryStore
 from clawback.policy import Policy, RootGrant
 from clawback.tools.dispatch import ToolDispatcher
 
@@ -16,13 +19,14 @@ class DenyingBroker:
         return ApprovalResult(False, "owner_denied", "req", "digest")
 
 
-def _dispatcher(policy, sandbox, audit, mailer):
+def _dispatcher(policy, sandbox, audit, mailer, memory=None):
     return ToolDispatcher(
         policy=policy,
         sandbox=sandbox,
         audit=audit,
         config=AppConfig(),
         mailer=mailer,
+        memory=memory,
         on_event=None,
     )
 
@@ -211,3 +215,49 @@ def test_every_tool_call_is_audited(policy, audit):
     assert entry["tool"] == "list_dir"
     assert entry["decision"] == "allow"
     assert entry["ok"] is True
+
+
+def test_memory_tools_are_host_scoped_and_never_touch_the_sandbox(tmp_path, policy, audit):
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    memory = MemoryStore(tmp_path / "memory.md")
+    sandbox = FakeSandbox()
+    dispatcher = _dispatcher(policy, sandbox, audit, FakeMailer(), memory=memory)
+
+    appended = dispatcher.execute(
+        "append_memory",
+        {"text": "The owner prefers tea."},
+        broker=DenyingBroker(),
+        cycle_id="c1",
+        mode="interactive",
+    )
+    assert appended.ok is True
+    assert "The owner prefers tea." in memory.read()
+
+    read = dispatcher.execute(
+        "read_memory",
+        {},
+        broker=DenyingBroker(),
+        cycle_id="c1",
+        mode="interactive",
+    )
+    assert read.ok is True
+    payload = json.loads(read.content)
+    assert "The owner prefers tea." in payload["text"]
+    assert sandbox.calls == []
+
+
+def test_append_memory_rejects_empty_text(tmp_path, policy, audit):
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    memory = MemoryStore(tmp_path / "memory.md")
+    dispatcher = _dispatcher(policy, FakeSandbox(), audit, FakeMailer(), memory=memory)
+    outcome = dispatcher.execute(
+        "append_memory",
+        {"text": "   "},
+        broker=ApprovingBroker(),
+        cycle_id="c1",
+        mode="interactive",
+    )
+    assert outcome.decision == "error"
+    assert memory.read() == ""

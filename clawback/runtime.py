@@ -68,6 +68,7 @@ class Runtime:
             audit=self.audit,
             config=self.config,
             mailer=self.mailer,
+            memory=self.memory,
             on_event=self._emit,
         )
 

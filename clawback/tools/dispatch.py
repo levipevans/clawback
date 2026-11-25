@@ -13,6 +13,7 @@ import jsonschema
 from ..approvals import ApprovalBroker
 from ..audit import AuditLog
 from ..config import AppConfig
+from ..memory import MemoryStore
 from ..policy import Policy, PolicyError
 from ..sandbox.docker import DockerSandbox
 from . import schemas
@@ -54,6 +55,7 @@ class ToolDispatcher:
         audit: AuditLog,
         config: AppConfig,
         mailer: Mailer | None = None,
+        memory: MemoryStore | None = None,
         on_event: EventFn | None = None,
     ):
         self.policy = policy
@@ -61,6 +63,7 @@ class ToolDispatcher:
         self.audit = audit
         self.config = config
         self.mailer = mailer
+        self.memory = memory
         self.on_event = on_event
 
     # -- model-facing specs ----------------------------------------------
@@ -110,6 +113,9 @@ class ToolDispatcher:
                 mode,
                 [],
             )
+
+        if name in ("read_memory", "append_memory"):
+            return self._memory_tool(name, args, cycle_id, mode, started)
 
         scopes: list[str] = []
         try:
@@ -163,6 +169,76 @@ class ToolDispatcher:
         return self._finish(name, args, decision, payload, started, cycle_id, mode, scopes, ok=ok)
 
     # -- helpers ----------------------------------------------------------
+    def _memory_tool(
+        self, name: str, args: dict, cycle_id: str, mode: str, started: float
+    ) -> ToolOutcome:
+        if self.memory is None:
+            return self._finish(
+                name,
+                args,
+                "error",
+                {"ok": False, "error": "memory_unavailable"},
+                started,
+                cycle_id,
+                mode,
+                ["memory"],
+            )
+        if name == "read_memory":
+            try:
+                limit = int(args.get("max_chars", 20_000) or 20_000)
+            except (TypeError, ValueError):
+                limit = 20_000
+            limit = max(1_000, min(limit, 60_000))
+            text = self.memory.read()
+            truncated = len(text) > limit
+            if truncated:
+                text = "..." + text[-limit:]
+            return self._finish(
+                name,
+                args,
+                "allow",
+                {"ok": True, "text": text, "truncated": truncated},
+                started,
+                cycle_id,
+                mode,
+                ["memory"],
+            )
+
+        text = str(args.get("text", ""))
+        if not text.strip():
+            return self._finish(
+                name,
+                args,
+                "error",
+                {"ok": False, "error": "text_required"},
+                started,
+                cycle_id,
+                mode,
+                ["memory"],
+            )
+        if len(text) > 4_000:
+            return self._finish(
+                name,
+                args,
+                "error",
+                {"ok": False, "error": "text_too_large"},
+                started,
+                cycle_id,
+                mode,
+                ["memory"],
+            )
+        self.memory.append_assistant(text)
+        return self._finish(
+            name,
+            args,
+            "allow",
+            {"ok": True, "bytes": len(text.encode("utf-8"))},
+            started,
+            cycle_id,
+            mode,
+            ["memory"],
+        )
+
     def _check_paths(self, name: str, args: dict) -> list[str]:
         scopes: list[str] = []
         for key, writable in _PATH_ARGS.get(name, {}).items():
@@ -312,6 +388,10 @@ class ToolDispatcher:
     @staticmethod
     def _audit_args(name: str, args: dict) -> dict:
         """Keep the activity log concise: metadata, not file/email contents."""
+        if name == "append_memory":
+            return {"bytes": len(str(args.get("text", "")).encode("utf-8"))}
+        if name == "read_memory":
+            return {"max_chars": args.get("max_chars")}
         if name in ("write_file", "append_file"):
             content = str(args.get("content", ""))
             return {"path": args.get("path"), "bytes": len(content.encode("utf-8"))}

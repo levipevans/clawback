@@ -49,6 +49,14 @@ def test_memory_note(tmp_path):
     assert "remember the project is called Clawback" in memory.read()
 
 
+def test_memory_assistant_append(tmp_path):
+    memory = MemoryStore(tmp_path / "memory.md")
+    memory.append_assistant("The owner prefers tea over coffee.")
+    text = memory.read()
+    assert "(assistant)" in text
+    assert "The owner prefers tea over coffee." in text
+
+
 def test_memory_is_trimmed_but_keeps_recent(tmp_path):
     memory = MemoryStore(tmp_path / "memory.md", max_chars=900)
     for index in range(40):
