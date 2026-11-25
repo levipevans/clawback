@@ -93,7 +93,7 @@ TOOLS: list[dict] = [
     ),
     _fn(
         "write_file",
-        "Create or replace a file under /work or a writable grant. Requires owner confirmation.",
+        "Create or replace a file inside a writable root (/work or /rw/<name>).",
         {
             "path": _WRITE_PATH,
             "content": {"type": "string"},
@@ -103,19 +103,19 @@ TOOLS: list[dict] = [
     ),
     _fn(
         "append_file",
-        "Append text to a file under /work or a writable grant. Requires owner confirmation.",
+        "Append text to a file inside a writable root.",
         {"path": _WRITE_PATH, "content": {"type": "string"}},
         ["path", "content"],
     ),
     _fn(
         "make_dir",
-        "Create a directory under /work or a writable grant. Requires owner confirmation.",
+        "Create a directory inside a writable root.",
         {"path": _WRITE_PATH},
         ["path"],
     ),
     _fn(
         "move_path",
-        "Move or rename a path inside a writable root. Requires owner confirmation.",
+        "Move or rename a path inside a writable root.",
         {
             "src": _WRITE_PATH,
             "dst": _WRITE_PATH,
@@ -125,7 +125,7 @@ TOOLS: list[dict] = [
     ),
     _fn(
         "copy_path",
-        "Copy from /work or a read-only root into /work. Requires owner confirmation.",
+        "Copy from /work, /rw, or /ro into a writable root.",
         {
             "src": _READ_PATH,
             "dst": _WRITE_PATH,
@@ -135,8 +135,7 @@ TOOLS: list[dict] = [
     ),
     _fn(
         "delete_path",
-        "Move a path to a trash folder in its writable root (recoverable). "
-        "Requires owner confirmation.",
+        "Move a path to a trash folder in its writable root (recoverable).",
         {"path": _WRITE_PATH},
         ["path"],
     ),
@@ -170,16 +169,9 @@ EMAIL_TOOL = _fn(
     ["to", "subject", "body"],
 )
 
-CONSEQUENTIAL = {
-    "write_file",
-    "append_file",
-    "make_dir",
-    "move_path",
-    "copy_path",
-    "delete_path",
-    "run_bash",
-    "send_email",
-}
+# Only these require an approval prompt. File mutations are pre-authorized by
+# the path policy: /work and writable grants are writable; /ro is not.
+CONSEQUENTIAL = {"run_bash", "send_email"}
 
 # Tool name -> in-container operation name.
 OPS = {

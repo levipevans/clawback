@@ -51,8 +51,9 @@ fallback to the host filesystem.
 | `/ro/Desktop`, `/ro/Documents`, `/ro/Downloads`, `/ro/Pictures`, `/ro/Music`, `/ro/Videos` | ro | Standard user folders. |
 | `/ro/<name>` | ro | Any extra folder you add read-only. |
 
-* A writable grant does **not** bypass confirmation. Granting the folder makes a
-  write possible; every write still needs your approval.
+* A writable grant is a standing authorization: file writes, moves, copies,
+  and deletes inside it run without a confirmation prompt. It does not grant
+  shell access, and the sandbox still confines the path.
 * Dotfiles, `AppData`, and other credential/config locations are never mounted.
 * A hidden folder is masked with an **empty read-only mount**, not a string
   check. Its contents are absent from the container.
@@ -143,16 +144,15 @@ Type a request at the prompt. `/help` lists commands.
 clawback> summarize the files in /work and tell me what is unfinished
 ```
 
-Consequential actions are shown with a preview (including a diff for writes)
-and require `y`:
+`run_bash` and `send_email` are the only actions that ask for confirmation.
+They are shown with a preview and require `y`:
 
 ```
-+-- Confirm: write_file  (id 1a2b3c4d) ----------------------------+
-| Write /work/summary.md (812 bytes):                             |
-| --- /work/summary.md (current)                                  |
-| +++ /work/summary.md (new)                                      |
-| ...                                                             |
-+-----------------------------------------------------------------+
++-- Confirm: run_bash  (id 1a2b3c4d) ------------------------------+
+| Run INSIDE the sandbox (cwd /work, no network):                  |
+|                                                                  |
+| rm /work/old-report.txt                                          |
++------------------------------------------------------------------+
 Approve? [y/N]
 ```
 
@@ -230,21 +230,22 @@ uv run python clawback.py tasks enable workspace-check
 
 * **Read** tools (list, read, stat, search, copy-from-read-root) run without
   confirmation.
-* **Consequential** tools are `write_file`, `append_file`, `make_dir`,
-  `move_path`, `copy_path`, `delete_path`, `run_bash`, `send_email`.
-* **Terminal sessions** ask you to confirm each consequential action. An
-  approval is bound to a SHA-256 digest of the exact tool + arguments and
-  expires.
-* **Scheduled cycles** refuse consequential actions -- nobody is there to
-  confirm them.
-* **Email sessions** auto-approve consequential actions by policy. The sandbox
-  still confines file operations, and `send_email` still cannot leave the
-  owner/trusted allowlist.
+* **File mutations** (`write_file`, `append_file`, `make_dir`, `move_path`,
+  `copy_path`, `delete_path`) run without confirmation inside `/work` and any
+  writable grant. Outside those roots the path policy denies them.
+* **Confirmation-gated** tools are `run_bash` and `send_email`.
+* **Terminal sessions** prompt for `run_bash` and `send_email`. An approval is
+  bound to a SHA-256 digest of the exact tool + arguments and expires.
+* **Scheduled cycles** refuse `run_bash` and `send_email`; file mutations are
+  allowed inside writable roots.
+* **Email sessions** auto-approve file mutations; `run_bash` requires terminal
+  confirmation and is refused; `send_email` cannot leave the owner/trusted
+  allowlist.
 * Denying an action tells the model to stop and report, not retry.
 * Adding a root or hiding a folder is an explicit owner action and is audited.
   Hiding is enforced at the mount layer.
-* Writable grants are mounted at `/rw/<name>`. Terminal sessions confirm each
-  write; email sessions auto-approve it. The sandbox still confines the path.
+* Writable grants at `/rw/<name>` are pre-authorized for file mutations. The
+  sandbox and path policy are the boundary.
 
 `delete_path` moves things to a trash folder in the same writable root
 (`/work/.trash` or `/rw/<name>/.clawback-trash`) instead of unlinking them.
@@ -365,9 +366,10 @@ batch. In the console: `/email [status|check|poll]`.
 * Whitelisted senders bypass the classifier. If a trusted account is
   compromised, it can drive the assistant.
 * The classifier is best-effort LLM screening, not a proof.
-* Email sessions auto-approve consequential tools. The sandbox still confines
-  file operations, and `send_email` cannot leave the owner/trusted allowlist,
-  so an injected email cannot exfiltrate to a stranger.
+* Email sessions auto-approve file mutations inside writable roots. Shell
+  commands require terminal confirmation and are refused in email sessions.
+  `send_email` cannot leave the owner/trusted allowlist, so an injected email
+  cannot exfiltrate to a stranger.
 * Attachments are ignored in v1. Plain text is preferred; HTML-only bodies are
   converted to text.
 * SMS, IRC, Matrix, and XMPP remain out of scope.

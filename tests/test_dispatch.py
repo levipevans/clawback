@@ -48,7 +48,7 @@ def test_read_is_allowed_without_approval(policy, audit):
     assert sandbox.calls[-1] == ("read", {"path": "/ro/documents/note.txt"})
 
 
-def test_write_requires_approval(policy, audit):
+def test_write_is_allowed_without_approval(policy, audit):
     from tests.helpers import FakeMailer, FakeSandbox
 
     sandbox = FakeSandbox()
@@ -60,11 +60,13 @@ def test_write_requires_approval(policy, audit):
         cycle_id="c1",
         mode="interactive",
     )
-    assert outcome.decision == "denied"
-    assert not any(op == "write" for op, _args in sandbox.calls)
+    assert outcome.ok is True
+    assert outcome.decision == "allow"
+    writes = [args for op, args in sandbox.calls if op == "write"]
+    assert writes and writes[-1]["path"] == "/work/new.txt"
 
 
-def test_approved_write_executes(policy, audit):
+def test_write_is_allowed_in_scheduled_cycles(policy, audit):
     from tests.helpers import FakeMailer, FakeSandbox
 
     sandbox = FakeSandbox()
@@ -72,13 +74,12 @@ def test_approved_write_executes(policy, audit):
     outcome = dispatcher.execute(
         "write_file",
         {"path": "/work/new.txt", "content": "hi"},
-        broker=ApprovingBroker(),
+        broker=DenyingBroker(),
         cycle_id="c1",
-        mode="interactive",
+        mode="scheduled",
     )
-    assert outcome.decision == "approved"
-    writes = [args for op, args in sandbox.calls if op == "write"]
-    assert writes and writes[-1]["path"] == "/work/new.txt"
+    assert outcome.decision == "allow"
+    assert any(op == "write" for op, _args in sandbox.calls)
 
 
 def test_traversal_is_denied_before_the_sandbox(policy, audit):
@@ -146,11 +147,11 @@ def test_write_to_writable_grant_executes(tmp_path, profile, audit):
     outcome = dispatcher.execute(
         "write_file",
         {"path": "/rw/scratch/new.txt", "content": "hi"},
-        broker=ApprovingBroker(),
+        broker=DenyingBroker(),
         cycle_id="c1",
         mode="interactive",
     )
-    assert outcome.decision == "approved"
+    assert outcome.decision == "allow"
     writes = [args for op, args in sandbox.calls if op == "write"]
     assert writes and writes[-1]["path"] == "/rw/scratch/new.txt"
 
@@ -179,6 +180,23 @@ def test_bash_requires_approval(policy, audit):
     )
     assert approved.decision == "approved"
     assert sandbox.calls[-1] == ("bash", {"command": "ls"})
+
+
+def test_bash_is_refused_in_email_sessions(policy, audit):
+    from clawback.inbound import EmailApprovalBroker
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    sandbox = FakeSandbox()
+    dispatcher = _dispatcher(policy, sandbox, audit, FakeMailer())
+    outcome = dispatcher.execute(
+        "run_bash",
+        {"command": "ls"},
+        broker=EmailApprovalBroker(FakeMailer()),
+        cycle_id="c1",
+        mode="email",
+    )
+    assert outcome.decision == "needs_approval"
+    assert sandbox.calls == []
 
 
 def test_email_is_allowlisted_and_audited(policy, audit):

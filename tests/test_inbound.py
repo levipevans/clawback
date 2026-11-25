@@ -327,6 +327,13 @@ def test_email_broker_blocks_unknown_recipients():
     assert result.reason == "recipient_not_allowed"
 
 
+def test_email_broker_requires_confirmation_for_shell():
+    broker = EmailApprovalBroker(FakeMailer())
+    result = broker.request("run_bash", {"command": "ls"}, "")
+    assert result.approved is False
+    assert result.reason == "needs_approval"
+
+
 def test_email_broker_allows_other_tools():
     broker = EmailApprovalBroker(FakeMailer())
     result = broker.request("write_file", {"path": "/work/x"}, "")

@@ -148,10 +148,17 @@ class ToolDispatcher:
                     "report what you were trying to do and why."
                 )
                 if needs_owner:
-                    message = (
-                        "This action needs the owner's approval, and scheduled cycles "
-                        "cannot ask for it. It was not executed. Report it as pending approval."
-                    )
+                    if mode.startswith("email"):
+                        message = (
+                            "This action requires terminal confirmation, and email "
+                            "sessions cannot ask for it. It was not executed. Report it "
+                            "as pending approval."
+                        )
+                    else:
+                        message = (
+                            "This action needs the owner's approval, and scheduled cycles "
+                            "cannot ask for it. It was not executed. Report it as pending approval."
+                        )
                 return self._finish(
                     name,
                     args,

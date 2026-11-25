@@ -288,6 +288,8 @@ class EmailApprovalBroker:
         self.mailer = mailer
 
     def request(self, tool: str, args: dict, preview: str) -> ApprovalResult:
+        if tool == "run_bash":
+            return ApprovalResult(False, "needs_approval", "email-policy", "")
         if tool == "send_email":
             if not self.mailer.can_send_to(str(args.get("to", ""))):
                 return ApprovalResult(False, "recipient_not_allowed", "email-policy", "")
