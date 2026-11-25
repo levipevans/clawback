@@ -167,12 +167,13 @@ Approve? [y/N]
 | `/enable NAME` `/disable NAME` | toggle a task |
 | `/roots` | show mounted folders and their modes |
 | `/add-root PATH` | grant read-only access to a folder (live reload) |
-| `/add-write-root PATH` | grant read-write access (writes still confirmed) |
+| `/add-write-root PATH` | grant read-write access to a folder |
 | `/remove-root PATH` | remove a read or write grant |
 | `/hide-root PATH` | mask a folder with an empty mount |
 | `/unhide-root PATH` | undo a hide |
-| `/memory [show\|clear\|path]` | long-term memory file |
+| `/memory [show\|clear\|reset\|path]` | long-term memory file |
 | `/remember TEXT` | add a note to memory |
+| `/wakeups [list\|clear]` | scheduled wake-ups |
 | `/email [status\|check\|poll]` | inbound email status, connectivity, one poll |
 | `/new` | clear this session's conversation context |
 | `/log [n]` | recent activity |
@@ -181,8 +182,8 @@ Approve? [y/N]
 | `/path` | print data locations |
 | `/quit` | stop and exit |
 
-CLI equivalents: `status`, `log`, `wipe`, `roots`, `tasks`, `memory`, `email`,
-`doctor`, `config`, `sandbox`.
+CLI equivalents: `status`, `log`, `wipe`, `roots`, `tasks`, `memory`, `wakeups`,
+`email`, `doctor`, `config`, `sandbox`.
 
 ---
 
@@ -234,6 +235,12 @@ uv run python clawback.py tasks enable workspace-check
   `copy_path`, `delete_path`) run without confirmation inside `/work` and any
   writable grant. Outside those roots the path policy denies them.
 * **Confirmation-gated** tools are `run_bash` and `send_email`.
+* `web_search` and `web_fetch` are read-only host tools. The Docker sandbox
+  remains offline; only these host helpers reach the network.
+* `spawn_subagent` inherits the caller's tools and approval broker. Recursion
+  and per-run counts are capped.
+* `schedule_wakeup` is a host-side scheduling action. Wake-ups run in `wakeup`
+  mode: file writes and web tools are allowed; shell and email are refused.
 * **Terminal sessions** prompt for `run_bash` and `send_email`. An approval is
   bound to a SHA-256 digest of the exact tool + arguments and expires.
 * **Scheduled cycles** refuse `run_bash` and `send_email`; file mutations are
@@ -283,6 +290,57 @@ is still treated as untrusted data by the model.
 The file is capped at roughly 64 KB; oldest entries are trimmed first. Memory is
 **untrusted data** as far as the model is concerned, and it is yours to edit or
 delete.
+
+---
+
+## Research: web, sub-agents, wake-ups
+
+Clawback can do multi-step research without giving the Docker sandbox network
+access. Web tools run on the host; the container stays offline.
+
+| Tool | What it does |
+|---|---|
+| `web_search` | Search the public web via OpenRouter's web plugin. Returns a summary plus source URLs. Uses the existing OpenRouter key; no extra search key. |
+| `web_fetch` | Fetch a public http(s) URL and return text. Private/local/credentialed URLs and redirects into private space are refused; responses are size-capped. |
+| `spawn_subagent` | Delegate a task to a fresh agent with the **same tools and permissions as its parent**. Depth and per-run count are capped. |
+| `schedule_wakeup` | Persist a wake-up with a self-contained prompt. The current run ends; the scheduler starts a new run later. |
+
+Web pages, search results, and sub-agent output are untrusted data. The model is
+told not to follow instructions found in them.
+
+### Wake-ups
+
+`schedule_wakeup` writes to `state.json`. The scheduler checks every few seconds
+and runs due wake-ups in `wakeup` mode. Wake-ups get file writes and web tools;
+shell and email are refused because nobody is at the terminal. A wake-up can
+schedule another wake-up. Pending wake-ups are capped at 20.
+
+```powershell
+uv run python clawback.py wakeups          # list pending wake-ups
+uv run python clawback.py wakeups clear    # cancel all
+```
+
+Console: `/wakeups`, `/wakeups clear`.
+
+A research pattern:
+
+> Research X. Delegate two independent angles to sub-agents, write the combined
+> notes to `/work/research.md`, then schedule a wake-up in 30 minutes to continue.
+
+### Sub-agents and permissions
+
+A sub-agent gets the same tools and the same approval broker as its parent. In a
+terminal session, a sub-agent's `run_bash` still prompts; in an email session,
+shell is refused; file writes inside writable roots are allowed. Recursion is
+bounded by `max_subagent_depth` (default 3) and `max_subagents` per run (default
+3), with a per-sub-agent time cap (`subagent_seconds`, default 60).
+
+```toml
+[budgets]
+max_subagents = 3
+max_subagent_depth = 3
+subagent_seconds = 60
+```
 
 ---
 
@@ -407,11 +465,12 @@ uv run pytest
 Unit tests cover the path policy, approval binding, scheduler budgets, audit
 redaction, config validation, session memory, the persistent memory file,
 inbound email parsing, header trust, classifier decisions, deletion/dedup, reply
-threading, and the agent loop (with a scripted model). The Docker integration
-tests prove the container properties: non-root, `/work` writable, writable
-grants, read-only roots, hidden-folder masking, absent host paths, no network,
-and structured-operation traversal rejection. They skip automatically if Docker
-is unavailable.
+threading, web-tool guards, wake-up scheduling, sub-agent inheritance, and the
+agent loop (with a scripted model). The Docker integration tests prove the
+container properties: non-root, `/work` writable, writable grants, read-only
+roots, hidden-folder masking, absent host paths, no network, and
+structured-operation traversal rejection. They skip automatically if Docker is
+unavailable.
 
 ---
 
@@ -424,6 +483,9 @@ is unavailable.
 * **Inbound email is a command channel for trusted senders.** A compromised
   trusted account can drive the assistant. Unknown senders are LLM-screened,
   which is best-effort, not a proof. Attachments are ignored.
+* **Web content and sub-agent output are untrusted.** Sub-agents inherit their
+  parent's permissions by design; the depth/count caps are resource guards, not
+  a permission boundary.
 * The model is external: prompts and tool output you send it go to OpenRouter.
   That is the only default network path; the sandbox itself has none.
 * Docker Desktop is a runtime dependency. The app fails closed without it.
@@ -439,20 +501,22 @@ is unavailable.
 terminal / tray
       |
       v
-  Runtime  ──  Scheduler (bounded wake cycles)
+  Runtime  ──  Scheduler (wake cycles + due wake-ups)
       |    └──  EmailInbox (IMAP)  ──►  classifier (unknown senders)
       |                                   │
       |                                   ├── safe ──────► Agent (fresh email session)
       |                                   └── malicious ─► delete
       v
-  Agent loop  ──► OpenRouter (DeepSeek V4.1 Flash 1017)
+  Agent loop  ──► OpenRouter (web plugin for web_search)
       |  ^
       |  └── Conversation (session) + memory.md (long-term)
+      |      └── spawn_subagent ──► nested Agent (same tools/permissions)
       v
   ToolDispatcher
       | validate args (jsonschema)
       | check path policy (deny by default)
-      | apply session policy (terminal confirms / email auto-approves)
+      | web_search / web_fetch ──► host network (SSRF-guarded)
+      | apply session policy (terminal confirms / email auto-approves writes)
       | audit decision
       v
   DockerSandbox  ──► container: /work rw, /rw/* rw, /ro/* ro, no network

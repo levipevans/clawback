@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -134,6 +135,23 @@ def cmd_wipe(args: argparse.Namespace) -> int:
         shutil.rmtree(workspace, ignore_errors=True)
         workspace.mkdir(parents=True, exist_ok=True)
         print(f"deleted workspace {workspace}")
+    return 0
+
+
+def cmd_wakeups(args: argparse.Namespace) -> int:
+    profile = paths.profile_dir()
+    state = StateStore(profile / "state.json")
+    if args.action == "clear":
+        count = state.clear_wakeups()
+        print(f"cleared {count} pending wakeup(s)")
+        return 0
+    wakes = state.wakeups()
+    if not wakes:
+        print("no pending wakeups")
+        return 0
+    for wake in wakes:
+        due = datetime.fromtimestamp(float(wake.get("due_at", 0))).strftime("%Y-%m-%d %H:%M")
+        print(f"{wake.get('id', '?')}  due {due}  {str(wake.get('prompt', ''))[:120]}")
     return 0
 
 
@@ -384,6 +402,9 @@ def build_parser() -> argparse.ArgumentParser:
     memory = sub.add_parser("memory", help="show or clear long-term memory")
     memory.add_argument("action", nargs="?", choices=["show", "clear", "reset", "path"], default="show")
 
+    wakeups = sub.add_parser("wakeups", help="list or clear scheduled wake-ups")
+    wakeups.add_argument("action", nargs="?", choices=["list", "clear"], default="list")
+
     email_parser = sub.add_parser("email", help="inbound email status, check, or one poll")
     email_parser.add_argument(
         "action", nargs="?", choices=["status", "check", "poll"], default="status"
@@ -424,6 +445,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_doctor(args)
         if command == "memory":
             return cmd_memory(args)
+        if command == "wakeups":
+            return cmd_wakeups(args)
         if command == "email":
             return cmd_email(args)
         if command == "config":

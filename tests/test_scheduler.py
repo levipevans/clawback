@@ -7,6 +7,7 @@ from clawback.agent import AgentResult
 from clawback.audit import AuditLog
 from clawback.config import AppConfig, Budgets, TaskConfig
 from clawback.controller import Controller, Status
+from clawback.memory import MemoryStore
 from clawback.scheduler import Scheduler
 from clawback.state import StateStore
 
@@ -16,7 +17,7 @@ class FakeAgent:
         self.runs: list[tuple[str, str]] = []
         self.deadlines: list[float | None] = []
 
-    def run(self, prompt, *, mode, cycle_id, broker, deadline=None, on_event=None, cancel=None):
+    def run(self, prompt, *, mode, cycle_id, broker, deadline=None, on_event=None, cancel=None, history=None, permission_mode=None):
         self.runs.append((prompt, mode))
         self.deadlines.append(deadline)
         return AgentResult("done", "completed", rounds=1, tool_calls=0)
@@ -27,6 +28,7 @@ class FakeRuntime:
         self.config = AppConfig(tasks=tasks, budgets=Budgets(max_seconds=5))
         self.state = StateStore(tmp_path / "state.json")
         self.audit = AuditLog(tmp_path / "audit.jsonl")
+        self.memory = MemoryStore(tmp_path / "memory.md")
         self.controller = Controller()
         self.controller.set(Status.IDLE)
         self.gate = threading.Lock()
@@ -97,3 +99,14 @@ def test_two_due_tasks_run_in_one_cycle(tmp_path):
     runtime = FakeRuntime(tmp_path, [_task("a"), _task("b")])
     Scheduler(runtime)._tick()
     assert [p for p, _m in runtime.agent.runs] == ["do a", "do b"]
+
+
+def test_due_wakeup_runs_and_is_removed(tmp_path):
+    runtime = FakeRuntime(tmp_path, [])
+    runtime.state.add_wakeup(time.time() - 1, "continue the research")
+    scheduler = Scheduler(runtime)
+    scheduler._tick_wakeups()
+    assert runtime.agent.runs == [("continue the research", "wakeup")]
+    assert runtime.state.wakeups() == []
+    assert any(e["event"] == "wakeup.finish" for e in runtime.audit.tail(20))
+    assert "continue the research" in runtime.memory.read()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from clawback.state import StateStore
 
 
@@ -36,3 +38,25 @@ def test_email_seen_persists_and_reloads(tmp_path):
     second.add_email_seen("<m2@example.com>")
     assert first.is_email_seen("<m2@example.com>") is True
     assert first.is_email_seen("<missing@example.com>") is False
+
+
+def test_wakeups_persist_due_and_remove(tmp_path):
+    path = tmp_path / "state.json"
+    first = StateStore(path)
+    wake = first.add_wakeup(1000.0, "continue the research")
+    assert wake["id"]
+    assert first.due_wakeups(999.0) == []
+    assert len(first.due_wakeups(1000.0)) == 1
+
+    second = StateStore(path)
+    assert len(second.wakeups()) == 1
+    assert second.remove_wakeup(wake["id"]) is True
+    assert first.wakeups() == []
+
+
+def test_wakeups_are_capped(tmp_path):
+    state = StateStore(tmp_path / "state.json")
+    for index in range(20):
+        state.add_wakeup(1000.0 + index, f"task {index}")
+    with pytest.raises(ValueError):
+        state.add_wakeup(2000.0, "one too many")

@@ -6,6 +6,7 @@ from clawback.approvals import ApprovalResult
 from clawback.config import AppConfig
 from clawback.memory import MemoryStore
 from clawback.policy import Policy, RootGrant
+from clawback.state import StateStore
 from clawback.tools.dispatch import ToolDispatcher
 
 
@@ -19,7 +20,7 @@ class DenyingBroker:
         return ApprovalResult(False, "owner_denied", "req", "digest")
 
 
-def _dispatcher(policy, sandbox, audit, mailer, memory=None):
+def _dispatcher(policy, sandbox, audit, mailer, memory=None, state=None, llm=None, subagent_runner=None):
     return ToolDispatcher(
         policy=policy,
         sandbox=sandbox,
@@ -27,6 +28,9 @@ def _dispatcher(policy, sandbox, audit, mailer, memory=None):
         config=AppConfig(),
         mailer=mailer,
         memory=memory,
+        state=state,
+        llm=llm,
+        subagent_runner=subagent_runner,
         on_event=None,
     )
 
@@ -279,3 +283,108 @@ def test_append_memory_rejects_empty_text(tmp_path, policy, audit):
     )
     assert outcome.decision == "error"
     assert memory.read() == ""
+
+
+def test_schedule_wakeup_tool_writes_state(tmp_path, policy, audit):
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    state = StateStore(tmp_path / "state.json")
+    dispatcher = _dispatcher(policy, FakeSandbox(), audit, FakeMailer(), state=state)
+    outcome = dispatcher.execute(
+        "schedule_wakeup",
+        {"delay_minutes": 5, "prompt": "continue the research"},
+        broker=DenyingBroker(),
+        cycle_id="c1",
+        mode="interactive",
+    )
+    assert outcome.ok is True
+    payload = json.loads(outcome.content)
+    assert payload["id"]
+    assert len(state.wakeups()) == 1
+
+
+def test_web_search_tool_uses_llm(policy, audit):
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    class FakeLLM:
+        def web_search(self, query, max_results):
+            return {
+                "ok": True,
+                "query": query,
+                "summary": "a summary",
+                "results": [{"title": "Example", "url": "https://example.com", "snippet": "x"}],
+            }
+
+    dispatcher = _dispatcher(policy, FakeSandbox(), audit, FakeMailer(), llm=FakeLLM())
+    outcome = dispatcher.execute(
+        "web_search",
+        {"query": "python"},
+        broker=DenyingBroker(),
+        cycle_id="c1",
+        mode="interactive",
+    )
+    assert outcome.ok is True
+    payload = json.loads(outcome.content)
+    assert payload["results"][0]["url"] == "https://example.com"
+
+
+def test_web_fetch_rejects_localhost(policy, audit):
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    dispatcher = _dispatcher(policy, FakeSandbox(), audit, FakeMailer())
+    outcome = dispatcher.execute(
+        "web_fetch",
+        {"url": "http://127.0.0.1/"},
+        broker=DenyingBroker(),
+        cycle_id="c1",
+        mode="interactive",
+    )
+    assert outcome.decision == "error"
+
+
+def test_spawn_subagent_gets_parent_permissions(policy, audit):
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    calls: dict = {}
+
+    def runner(task, max_seconds, deadline, depth, mode, broker):
+        calls.update(
+            {
+                "task": task,
+                "max_seconds": max_seconds,
+                "depth": depth,
+                "mode": mode,
+                "broker": broker,
+            }
+        )
+        return {"ok": True, "text": "findings", "tools": ["web_search"]}
+
+    dispatcher = _dispatcher(policy, FakeSandbox(), audit, FakeMailer(), subagent_runner=runner)
+    outcome = dispatcher.execute(
+        "spawn_subagent",
+        {"task": "research x", "max_seconds": 20},
+        broker=ApprovingBroker(),
+        cycle_id="c1",
+        mode="interactive",
+    )
+    assert outcome.ok is True
+    assert calls["task"] == "research x"
+    assert calls["depth"] == 1
+    assert calls["mode"] == "interactive"
+    assert calls["broker"].__class__ is ApprovingBroker
+
+
+def test_spawn_subagent_is_hidden_at_max_depth(policy, audit):
+    from tests.helpers import FakeMailer, FakeSandbox
+
+    dispatcher = ToolDispatcher(
+        policy=policy,
+        sandbox=FakeSandbox(),
+        audit=audit,
+        config=AppConfig(),
+        mailer=FakeMailer(),
+        subagent_runner=lambda *a, **k: {"ok": True},
+        depth=AppConfig().budgets.max_subagent_depth,
+    )
+    names = {spec["function"]["name"] for spec in dispatcher.tool_specs()}
+    assert "spawn_subagent" not in names

@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -194,6 +196,51 @@ class StateStore:
             seen.append(message_id)
             self._data["email_seen"] = seen[-cap:]
             self._write()
+
+    def wakeups(self) -> list[dict]:
+        with self._lock:
+            self._maybe_reload()
+            value = self._data.get("wakeups", [])
+            return [dict(v) for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+    def add_wakeup(self, due_at: float, prompt: str, max_pending: int = 20) -> dict:
+        with self._lock:
+            self._maybe_reload()
+            wakes = self.wakeups()
+            if len(wakes) >= max_pending:
+                raise ValueError("too many pending wakeups")
+            wake = {
+                "id": uuid.uuid4().hex[:8],
+                "due_at": float(due_at),
+                "prompt": str(prompt)[:4000],
+                "created_at": time.time(),
+            }
+            wakes.append(wake)
+            self._data["wakeups"] = wakes
+            self._write()
+            return wake
+
+    def due_wakeups(self, now: float) -> list[dict]:
+        return [w for w in self.wakeups() if float(w.get("due_at", 0)) <= now]
+
+    def remove_wakeup(self, wake_id: str) -> bool:
+        with self._lock:
+            self._maybe_reload()
+            wakes = self.wakeups()
+            kept = [w for w in wakes if w.get("id") != wake_id]
+            if len(kept) == len(wakes):
+                return False
+            self._data["wakeups"] = kept
+            self._write()
+            return True
+
+    def clear_wakeups(self) -> int:
+        with self._lock:
+            self._maybe_reload()
+            count = len(self.wakeups())
+            self._data["wakeups"] = []
+            self._write()
+            return count
 
     def wipe(self) -> None:
         with self._lock:

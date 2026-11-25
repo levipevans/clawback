@@ -137,6 +137,7 @@ class ConsoleUI:
             "log": self._cmd_log,
             "memory": self._cmd_memory,
             "remember": self._cmd_remember,
+            "wakeups": self._cmd_wakeups,
             "email": self._cmd_email,
             "new": self._cmd_new,
             "wipe": self._cmd_wipe,
@@ -174,6 +175,7 @@ class ConsoleUI:
             ("/unhide-root PATH", "undo a hide"),
             ("/memory [show|clear|reset|path]", "long-term memory file"),
             ("/remember TEXT", "add a note to memory"),
+            ("/wakeups [list|clear]", "scheduled wake-ups"),
             ("/email [status|check|poll]", "inbound email status, connectivity, one poll"),
             ("/new", "clear this session's conversation context"),
             ("/log [n]", "recent activity"),
@@ -199,6 +201,7 @@ class ConsoleUI:
         table.add_row("roots", f"{len(self.runtime.policy.roots)} mounted")
         table.add_row("writable grants", f"{len(self.runtime.policy.writable_roots())} (outside /work)")
         table.add_row("memory", f"{self.runtime.memory.size()} bytes")
+        table.add_row("wakeups", str(len(self.runtime.state.wakeups())))
         enabled = sum(
             1
             for t in self.runtime.config.tasks
@@ -356,6 +359,30 @@ class ConsoleUI:
         self.runtime.memory.append_note(rest)
         self.runtime.audit.record("memory.note")
         self.console.print("noted in memory")
+
+    def _cmd_wakeups(self, rest: str = "") -> None:
+        action = (rest or "list").strip().lower()
+        if action == "clear":
+            count = self.runtime.state.clear_wakeups()
+            self.runtime.audit.record("wakeup.clear", count=count)
+            self.console.print(f"cleared {count} pending wakeup(s)")
+            return
+        wakes = self.runtime.state.wakeups()
+        if not wakes:
+            self.console.print("[dim]no pending wakeups[/dim]")
+            return
+        table = Table(title="pending wakeups")
+        table.add_column("id")
+        table.add_column("due")
+        table.add_column("prompt", overflow="fold")
+        for wake in wakes:
+            due = datetime.fromtimestamp(float(wake.get("due_at", 0))).strftime("%Y-%m-%d %H:%M")
+            table.add_row(
+                str(wake.get("id", "?")),
+                due,
+                str(wake.get("prompt", ""))[:120],
+            )
+        self.console.print(table)
 
     def _cmd_email(self, rest: str = "") -> None:
         action = (rest or "status").strip().lower()

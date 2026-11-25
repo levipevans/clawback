@@ -6,6 +6,7 @@ import difflib
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 
 import jsonschema
@@ -13,9 +14,12 @@ import jsonschema
 from ..approvals import ApprovalBroker
 from ..audit import AuditLog
 from ..config import AppConfig
+from ..llm.openrouter import LLMError, OpenRouterClient
 from ..memory import MemoryStore
 from ..policy import Policy, PolicyError
 from ..sandbox.docker import DockerSandbox
+from ..state import StateStore
+from ..web import WebError, fetch_url
 from . import schemas
 from .email import EmailError, Mailer
 
@@ -56,6 +60,10 @@ class ToolDispatcher:
         config: AppConfig,
         mailer: Mailer | None = None,
         memory: MemoryStore | None = None,
+        state: StateStore | None = None,
+        llm: OpenRouterClient | None = None,
+        subagent_runner: Callable | None = None,
+        depth: int = 0,
         on_event: EventFn | None = None,
     ):
         self.policy = policy
@@ -64,12 +72,33 @@ class ToolDispatcher:
         self.config = config
         self.mailer = mailer
         self.memory = memory
+        self.state = state
+        self.llm = llm
+        self.subagent_runner = subagent_runner
+        self.depth = max(0, int(depth))
+        self._subagent_count = 0
         self.on_event = on_event
 
+    def begin_run(self) -> None:
+        self._subagent_count = 0
+
     # -- model-facing specs ----------------------------------------------
-    def tool_specs(self, mode: str = "interactive") -> list[dict]:
+    def _spec_map(self, mode: str) -> dict[str, dict]:
         include_email = self._email_enabled() and mode != "email"
-        return schemas.tool_specs(include_email)
+        specs = schemas.by_name(include_email)
+        if (
+            self.subagent_runner is None
+            or self.depth >= self.config.budgets.max_subagent_depth
+        ):
+            specs.pop("spawn_subagent", None)
+        if self.state is None:
+            specs.pop("schedule_wakeup", None)
+        if self.llm is None:
+            specs.pop("web_search", None)
+        return specs
+
+    def tool_specs(self, mode: str = "interactive") -> list[dict]:
+        return list(self._spec_map(mode).values())
 
     def _email_enabled(self) -> bool:
         return bool(self.mailer and self.mailer.available())
@@ -86,8 +115,7 @@ class ToolDispatcher:
         deadline: float | None = None,
     ) -> ToolOutcome:
         started = time.time()
-        include_email = self._email_enabled() and mode != "email"
-        specs = schemas.by_name(include_email)
+        specs = self._spec_map(mode)
         spec = specs.get(name)
         if spec is None:
             return self._finish(
@@ -116,6 +144,14 @@ class ToolDispatcher:
 
         if name in ("read_memory", "append_memory"):
             return self._memory_tool(name, args, cycle_id, mode, started)
+        if name == "web_search":
+            return self._web_search(args, cycle_id, mode, started)
+        if name == "web_fetch":
+            return self._web_fetch(args, cycle_id, mode, started)
+        if name == "schedule_wakeup":
+            return self._schedule_wakeup(args, cycle_id, mode, started)
+        if name == "spawn_subagent":
+            return self._spawn_subagent(args, broker, deadline, cycle_id, mode, started)
 
         scopes: list[str] = []
         try:
@@ -174,6 +210,247 @@ class ToolDispatcher:
         decision = "approved" if name in schemas.CONSEQUENTIAL else "allow"
         ok = bool(payload.get("ok"))
         return self._finish(name, args, decision, payload, started, cycle_id, mode, scopes, ok=ok)
+
+    # -- research tools ---------------------------------------------------
+    def _web_search(
+        self, args: dict, cycle_id: str, mode: str, started: float
+    ) -> ToolOutcome:
+        if self.llm is None:
+            return self._finish(
+                "web_search",
+                args,
+                "error",
+                {"ok": False, "error": "web_search_unavailable"},
+                started,
+                cycle_id,
+                mode,
+                ["web"],
+            )
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return self._finish(
+                "web_search",
+                args,
+                "error",
+                {"ok": False, "error": "query_required"},
+                started,
+                cycle_id,
+                mode,
+                ["web"],
+            )
+        try:
+            max_results = int(args.get("max_results", 5))
+        except (TypeError, ValueError):
+            max_results = 5
+        max_results = max(1, min(max_results, 10))
+        try:
+            payload = self.llm.web_search(query, max_results)
+        except LLMError as exc:
+            return self._finish(
+                "web_search",
+                args,
+                "error",
+                {"ok": False, "error": str(exc)},
+                started,
+                cycle_id,
+                mode,
+                ["web"],
+            )
+        return self._finish("web_search", args, "allow", payload, started, cycle_id, mode, ["web"])
+
+    def _web_fetch(
+        self, args: dict, cycle_id: str, mode: str, started: float
+    ) -> ToolOutcome:
+        url = str(args.get("url", "")).strip()
+        if not url:
+            return self._finish(
+                "web_fetch",
+                args,
+                "error",
+                {"ok": False, "error": "url_required"},
+                started,
+                cycle_id,
+                mode,
+                ["web"],
+            )
+        try:
+            max_chars = int(args.get("max_chars", 20_000))
+        except (TypeError, ValueError):
+            max_chars = 20_000
+        max_chars = max(1_000, min(max_chars, 60_000))
+        try:
+            payload = fetch_url(url, max_chars)
+        except WebError as exc:
+            return self._finish(
+                "web_fetch",
+                args,
+                "error",
+                {"ok": False, "error": str(exc)},
+                started,
+                cycle_id,
+                mode,
+                ["web"],
+            )
+        except Exception as exc:
+            return self._finish(
+                "web_fetch",
+                args,
+                "error",
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                started,
+                cycle_id,
+                mode,
+                ["web"],
+            )
+        return self._finish("web_fetch", args, "allow", payload, started, cycle_id, mode, ["web"])
+
+    def _spawn_subagent(
+        self,
+        args: dict,
+        broker: ApprovalBroker,
+        deadline: float | None,
+        cycle_id: str,
+        mode: str,
+        started: float,
+    ) -> ToolOutcome:
+        task = str(args.get("task", "")).strip()
+        if not task or len(task) > 4_000:
+            return self._finish(
+                "spawn_subagent",
+                args,
+                "error",
+                {"ok": False, "error": "task_required"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        if self.subagent_runner is None:
+            return self._finish(
+                "spawn_subagent",
+                args,
+                "error",
+                {"ok": False, "error": "subagent_unavailable"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        if self.depth >= self.config.budgets.max_subagent_depth:
+            return self._finish(
+                "spawn_subagent",
+                args,
+                "error",
+                {"ok": False, "error": "max_subagent_depth"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        if self._subagent_count >= self.config.budgets.max_subagents:
+            return self._finish(
+                "spawn_subagent",
+                args,
+                "error",
+                {"ok": False, "error": "max_subagents_reached"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        try:
+            max_seconds = int(args.get("max_seconds", self.config.budgets.subagent_seconds))
+        except (TypeError, ValueError):
+            max_seconds = self.config.budgets.subagent_seconds
+        max_seconds = max(10, min(max_seconds, 180))
+        self._subagent_count += 1
+        try:
+            payload = self.subagent_runner(
+                task, max_seconds, deadline, self.depth + 1, mode, broker
+            )
+        except Exception as exc:
+            return self._finish(
+                "spawn_subagent",
+                args,
+                "error",
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                started,
+                cycle_id,
+                mode,
+                ["subagent"],
+            )
+        if not isinstance(payload, dict):
+            payload = {"ok": True, "text": str(payload)}
+        return self._finish(
+            "spawn_subagent", args, "allow", payload, started, cycle_id, mode, ["subagent"]
+        )
+
+    def _schedule_wakeup(
+        self, args: dict, cycle_id: str, mode: str, started: float
+    ) -> ToolOutcome:
+        if self.state is None:
+            return self._finish(
+                "schedule_wakeup",
+                args,
+                "error",
+                {"ok": False, "error": "wakeups_unavailable"},
+                started,
+                cycle_id,
+                mode,
+                ["wakeup"],
+            )
+        try:
+            delay = int(args.get("delay_minutes", 0))
+        except (TypeError, ValueError):
+            delay = 0
+        if delay < 1 or delay > 10_080:
+            return self._finish(
+                "schedule_wakeup",
+                args,
+                "error",
+                {"ok": False, "error": "delay_out_of_range"},
+                started,
+                cycle_id,
+                mode,
+                ["wakeup"],
+            )
+        prompt = str(args.get("prompt", "")).strip()
+        if not prompt or len(prompt) > 4_000:
+            return self._finish(
+                "schedule_wakeup",
+                args,
+                "error",
+                {"ok": False, "error": "prompt_required"},
+                started,
+                cycle_id,
+                mode,
+                ["wakeup"],
+            )
+        due = time.time() + delay * 60
+        try:
+            wake = self.state.add_wakeup(due, prompt)
+        except ValueError as exc:
+            return self._finish(
+                "schedule_wakeup",
+                args,
+                "error",
+                {"ok": False, "error": str(exc)},
+                started,
+                cycle_id,
+                mode,
+                ["wakeup"],
+            )
+        due_iso = datetime.fromtimestamp(due, tz=timezone.utc).isoformat(timespec="seconds")
+        return self._finish(
+            "schedule_wakeup",
+            args,
+            "allow",
+            {"ok": True, "id": wake["id"], "due_at": due_iso, "delay_minutes": delay},
+            started,
+            cycle_id,
+            mode,
+            ["wakeup"],
+        )
 
     # -- helpers ----------------------------------------------------------
     def _memory_tool(
@@ -395,6 +672,20 @@ class ToolDispatcher:
     @staticmethod
     def _audit_args(name: str, args: dict) -> dict:
         """Keep the activity log concise: metadata, not file/email contents."""
+        if name == "web_search":
+            return {"query": str(args.get("query", ""))[:200], "max_results": args.get("max_results")}
+        if name == "web_fetch":
+            return {"url": str(args.get("url", ""))[:500]}
+        if name == "spawn_subagent":
+            return {
+                "task": str(args.get("task", ""))[:200],
+                "max_seconds": args.get("max_seconds"),
+            }
+        if name == "schedule_wakeup":
+            return {
+                "delay_minutes": args.get("delay_minutes"),
+                "bytes": len(str(args.get("prompt", "")).encode("utf-8")),
+            }
         if name == "append_memory":
             return {"bytes": len(str(args.get("text", "")).encode("utf-8"))}
         if name == "read_memory":

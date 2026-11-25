@@ -67,17 +67,84 @@ class Scheduler:
             self.runtime.controller.set(Status.PAUSED, "by owner")
         else:
             self.runtime.controller.set(Status.IDLE)
+        next_tasks = 0.0
         while not self._stop.is_set():
+            now = time.time()
+            if now >= next_tasks:
+                try:
+                    self._tick()
+                except Exception as exc:  # never let the scheduler die silently
+                    self.runtime.audit.record("scheduler.error", error=f"{type(exc).__name__}: {exc}")
+                    self.runtime.controller.set(Status.ERROR, f"{type(exc).__name__}: {exc}")
+                next_tasks = now + max(1, int(self.runtime.config.cycle_interval_minutes * 60))
             try:
-                self._tick()
-            except Exception as exc:  # never let the scheduler die silently
-                self.runtime.audit.record("scheduler.error", error=f"{type(exc).__name__}: {exc}")
-                self.runtime.controller.set(Status.ERROR, f"{type(exc).__name__}: {exc}")
-            sleep_seconds = max(1, int(self.runtime.config.cycle_interval_minutes * 60))
-            for _ in range(sleep_seconds):
+                self._tick_wakeups()
+            except Exception as exc:
+                self.runtime.audit.record("wakeup.error", error=f"{type(exc).__name__}: {exc}")
+            for _ in range(5):
                 if self._stop.is_set():
                     break
                 time.sleep(1)
+
+    def _tick_wakeups(self) -> None:
+        if self._pause.is_set() or self._stop.is_set():
+            return
+        due = self.runtime.state.due_wakeups(time.time())
+        if not due:
+            return
+        if not self.runtime.gate.acquire(blocking=False):
+            return
+        try:
+            for wake in due[:3]:
+                self._run_wakeup(wake)
+        finally:
+            self.runtime.gate.release()
+            if self._pause.is_set():
+                self.runtime.controller.set(Status.PAUSED, "by owner")
+            else:
+                self.runtime.controller.set(Status.IDLE)
+
+    def _run_wakeup(self, wake: dict) -> None:
+        wake_id = str(wake.get("id", "?"))
+        prompt = str(wake.get("prompt", ""))
+        cycle_id = f"wakeup-{wake_id}"
+        self.runtime.controller.set(Status.RUNNING, f"wakeup {wake_id}")
+        self.runtime.audit.record(
+            "wakeup.start", wake_id=wake_id, cycle_id=cycle_id, prompt=prompt[:300]
+        )
+        try:
+            broker = ApprovalBroker(interactive=False, timeout_seconds=1.0)
+            result = self.runtime.agent.run(
+                prompt,
+                mode="wakeup",
+                cycle_id=cycle_id,
+                broker=broker,
+                deadline=time.monotonic() + self.runtime.config.budgets.max_seconds,
+                history=[],
+                cancel=self.runtime.cancel_event,
+            )
+            try:
+                self.runtime.memory.append_interaction(
+                    f"[wakeup {wake_id}] {prompt}",
+                    result.text,
+                    result.tools_used,
+                    mode="wakeup",
+                )
+            except OSError:
+                pass
+            self.runtime.audit.record(
+                "wakeup.finish",
+                wake_id=wake_id,
+                cycle_id=cycle_id,
+                stopped=result.stopped_reason,
+                tool_calls=result.tool_calls,
+            )
+        except Exception as exc:
+            self.runtime.audit.record(
+                "wakeup.error", wake_id=wake_id, error=f"{type(exc).__name__}: {exc}"
+            )
+        finally:
+            self.runtime.state.remove_wakeup(wake_id)
 
     def _tick(self) -> None:
         if self._pause.is_set():

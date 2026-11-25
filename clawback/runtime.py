@@ -69,6 +69,7 @@ class Runtime:
             config=self.config,
             mailer=self.mailer,
             memory=self.memory,
+            state=self.state,
             on_event=self._emit,
         )
 
@@ -96,6 +97,9 @@ class Runtime:
             cancel_event=self.cancel_event,
             on_event=self._emit,
         )
+        self.dispatcher.llm = self.llm
+        self.dispatcher.state = self.state
+        self.dispatcher.subagent_runner = self._run_subagent
         self.audit.record("app.connect", model=self.config.model)
 
     def start_inbox(self) -> bool:
@@ -144,6 +148,10 @@ class Runtime:
                     audit=self.audit,
                     config=self.config,
                     mailer=self.mailer,
+                    memory=self.memory,
+                    state=self.state,
+                    llm=self.llm,
+                    subagent_runner=self._run_subagent,
                     on_event=self._emit,
                 )
                 if self.agent is not None:
@@ -192,6 +200,74 @@ class Runtime:
 
     def reset_conversation(self) -> None:
         self.conversation.reset()
+
+    def _run_subagent(
+        self,
+        task: str,
+        max_seconds: int,
+        parent_deadline: float | None,
+        depth: int,
+        permission_mode: str,
+        broker: ApprovalBroker,
+    ) -> dict:
+        if self.llm is None:
+            return {"ok": False, "error": "model_not_connected"}
+        deadline = time.monotonic() + max_seconds
+        if parent_deadline is not None:
+            deadline = min(deadline, parent_deadline)
+        dispatcher = ToolDispatcher(
+            policy=self.policy,
+            sandbox=self.sandbox,
+            audit=self.audit,
+            config=self.config,
+            mailer=self.mailer,
+            memory=self.memory,
+            state=self.state,
+            llm=self.llm,
+            subagent_runner=self._run_subagent,
+            depth=depth,
+            on_event=self._emit,
+        )
+        agent = Agent(
+            llm=self.llm,
+            dispatcher=dispatcher,
+            policy=self.policy,
+            config=self.config,
+            audit=self.audit,
+            memory=self.memory,
+        )
+        cycle_id = f"subagent-{uuid.uuid4().hex[:8]}"
+        self.audit.record(
+            "subagent.start",
+            cycle_id=cycle_id,
+            depth=depth,
+            task=task[:500],
+            permission_mode=permission_mode,
+        )
+        result = agent.run(
+            task,
+            mode="subagent",
+            permission_mode=permission_mode,
+            cycle_id=cycle_id,
+            broker=broker,
+            deadline=deadline,
+            history=[],
+            cancel=self.cancel_event,
+        )
+        self.audit.record(
+            "subagent.finish",
+            cycle_id=cycle_id,
+            depth=depth,
+            stopped=result.stopped_reason,
+            tool_calls=result.tool_calls,
+            tools=result.tools_used,
+        )
+        return {
+            "ok": True,
+            "text": result.text,
+            "tools": result.tools_used,
+            "stopped": result.stopped_reason,
+        }
 
     def shutdown(self) -> None:
         try:
