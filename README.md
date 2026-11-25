@@ -1,3 +1,7 @@
+**Run it:** `uv run python clawback.py run`
+
+<hr>
+
 # Clawback
 
 <p align="center">
