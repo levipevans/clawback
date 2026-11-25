@@ -138,6 +138,21 @@ def test_cancel_event_stops_the_loop(tmp_path):
     assert agent.llm.calls == []
 
 
+def test_zero_wall_clock_is_unlimited(tmp_path):
+    agent, _ = _agent(tmp_path, [LLMResponse("done", [])], max_seconds=0)
+    result = agent.run("go", mode="interactive", cycle_id="c1", broker=_broker())
+    assert result.stopped_reason == "completed"
+
+
+def test_system_prompt_mentions_budget(tmp_path):
+    agent, _ = _agent(
+        tmp_path, [], max_seconds=0, max_tool_calls=200, max_model_rounds=200
+    )
+    prompt = agent.system_prompt("interactive")
+    assert "200 tool calls" in prompt
+    assert "no wall-clock cap" in prompt
+
+
 def test_history_is_prepended_to_the_conversation(tmp_path):
     agent, _ = _agent(tmp_path, [LLMResponse("ok", [])])
     agent.run(

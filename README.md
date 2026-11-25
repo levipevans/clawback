@@ -206,16 +206,20 @@ that are due and enabled, and stops the whole cycle when any budget is hit:
 
 ```toml
 [budgets]
-max_seconds = 90          # wall clock for the cycle
-max_tool_calls = 24
-max_model_rounds = 10
-tool_timeout_seconds = 30
-max_tool_output_bytes = 120000
+max_seconds = 0           # 0 = no wall-clock cap
+max_tool_calls = 200
+max_model_rounds = 200
+tool_timeout_seconds = 120
+max_tool_output_bytes = 1000000
+max_subagents = 20
+max_subagent_depth = 5
+subagent_seconds = 600
+max_running_subagents = 32
 ```
 
-Scheduled cycles are unattended, so they cannot confirm actions. Any write,
-move, delete, shell command, or email is refused and recorded as
-`needs_approval`. Read-only work proceeds normally. After the cycle the
+Scheduled cycles are unattended, so they cannot confirm shell commands or email.
+Those are refused and recorded as `needs_approval`. File writes inside writable
+roots are allowed; read-only work proceeds normally. After the cycle the
 assistant returns to idle.
 
 Enable or disable without editing the file:
@@ -238,7 +242,7 @@ uv run python clawback.py tasks enable workspace-check
 * **Confirmation-gated** tools are `run_bash` and `send_email`.
 * `web_search` and `web_fetch` are read-only host tools. The Docker sandbox
   remains offline; only these host helpers reach the network.
-* `spawn_subagents` starts 2-6 parallel sub-agents that inherit the caller's
+* `spawn_subagents` starts 2-10 parallel sub-agents that inherit the caller's
   tools and approval broker. Depth and per-run counts are capped.
 * `schedule_wakeup` is a host-side scheduling action. Wake-ups run in `wakeup`
   mode: file writes and web tools are allowed; shell and email are refused.
@@ -303,7 +307,7 @@ access. Web tools run on the host; the container stays offline.
 |---|---|
 | `web_search` | Search the public web via OpenRouter's web plugin. Returns a summary plus source URLs. Uses the existing OpenRouter key; no extra search key. |
 | `web_fetch` | Fetch a public http(s) URL and return text. Private/local/credentialed URLs and redirects into private space are refused; responses are size-capped. |
-| `spawn_subagents` | Start **2-6 sub-agents in parallel**. Returns immediately with a batch id and one line per task. Each sub-agent has the same tools and permissions as its parent. |
+| `spawn_subagents` | Start **2-10 sub-agents in parallel**. Returns immediately with a batch id and one line per task. Each sub-agent has the same tools and permissions as its parent. |
 | `wait_subagents` | Wait for a batch and return per-job status/results. Use it when you actually need the findings. |
 | `subagent_status` | Non-blocking live status (running/done/error) for recent jobs. |
 | `schedule_wakeup` | Persist a wake-up with a self-contained prompt. The current run ends; the scheduler starts a new run later. |
@@ -349,15 +353,16 @@ A research pattern:
 A sub-agent gets the same tools and the same approval broker as its parent. In a
 terminal session, a sub-agent's `run_bash` still prompts; in an email session,
 shell is refused; file writes inside writable roots are allowed. Recursion is
-bounded by `max_subagent_depth` (default 3) and `max_subagents` per run (default
-6), with a per-sub-agent time cap (`subagent_seconds`, default 60). At most 12
+bounded by `max_subagent_depth` (default 5) and `max_subagents` per run (default
+20), with a per-sub-agent time cap (`subagent_seconds`, default 600). At most 32
 sub-agents run at once across the tree.
 
 ```toml
 [budgets]
-max_subagents = 6
-max_subagent_depth = 3
-subagent_seconds = 60
+max_subagents = 20
+max_subagent_depth = 5
+subagent_seconds = 600
+max_running_subagents = 32
 ```
 
 ---

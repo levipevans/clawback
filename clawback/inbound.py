@@ -537,7 +537,11 @@ class EmailInbox:
                 mode="email",
                 cycle_id=f"email-{uuid.uuid4().hex[:8]}",
                 broker=EmailApprovalBroker(self.mailer),
-                deadline=time.monotonic() + self.config.budgets.max_seconds,
+                deadline=(
+                    time.monotonic() + self.config.budgets.max_seconds
+                    if self.config.budgets.max_seconds > 0
+                    else None
+                ),
                 history=[],
                 cancel=self.cancel_event,
             )

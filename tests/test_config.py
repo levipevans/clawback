@@ -25,6 +25,15 @@ def test_default_config_is_created(tmp_path):
     assert config.extra_write_roots == []
 
 
+def test_budget_defaults_are_generous():
+    budget = AppConfig().budgets
+    assert budget.max_seconds == 0
+    assert budget.max_tool_calls == 200
+    assert budget.max_model_rounds == 200
+    assert budget.max_subagents == 20
+    assert budget.max_running_subagents == 32
+
+
 def test_duplicate_task_names_are_rejected(tmp_path):
     (tmp_path / "config.toml").write_text(
         textwrap.dedent(
@@ -132,5 +141,5 @@ def test_defaults_merge_with_partial_toml(tmp_path):
     (tmp_path / "config.toml").write_text('model = "x/y"\n', encoding="utf-8")
     config = load_config(tmp_path)
     assert config.model == "x/y"
-    assert config.budgets.max_seconds == 90
+    assert config.budgets.max_seconds == 0
     assert isinstance(config, AppConfig)

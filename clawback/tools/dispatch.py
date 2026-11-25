@@ -349,12 +349,12 @@ class ToolDispatcher:
                 mode,
                 ["subagent"],
             )
-        if len(tasks) > 6:
+        if len(tasks) > 10:
             return self._finish(
                 "spawn_subagents",
                 args,
                 "error",
-                {"ok": False, "error": "at_most_six_tasks"},
+                {"ok": False, "error": "at_most_ten_tasks"},
                 started,
                 cycle_id,
                 mode,
@@ -410,7 +410,7 @@ class ToolDispatcher:
             max_seconds = int(args.get("max_seconds", self.config.budgets.subagent_seconds))
         except (TypeError, ValueError):
             max_seconds = self.config.budgets.subagent_seconds
-        max_seconds = max(10, min(max_seconds, 180))
+        max_seconds = max(10, min(max_seconds, 3_600))
         try:
             batch_id, jobs = self.subagent_manager.start_batch(
                 cleaned,

@@ -54,15 +54,16 @@ interactive_approval_timeout_seconds = 120
 
 [budgets]
 # Hard limits for one wake cycle. When any limit is hit the cycle stops.
-max_seconds = 90
-max_tool_calls = 24
-max_model_rounds = 10
-tool_timeout_seconds = 30
-max_tool_output_bytes = 120000
+max_seconds = 0
+max_tool_calls = 200
+max_model_rounds = 200
+tool_timeout_seconds = 120
+max_tool_output_bytes = 1000000
 # Research helpers
-max_subagents = 6
-max_subagent_depth = 3
-subagent_seconds = 60
+max_subagents = 20
+max_subagent_depth = 5
+subagent_seconds = 600
+max_running_subagents = 32
 
 [email]
 # Outbound email is gated to the owner and the trusted list below.
@@ -109,14 +110,15 @@ class ConfigError(RuntimeError):
 class Budgets(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    max_seconds: int = Field(default=90, ge=5, le=3600)
-    max_tool_calls: int = Field(default=24, ge=1, le=200)
-    max_model_rounds: int = Field(default=10, ge=1, le=50)
-    tool_timeout_seconds: int = Field(default=30, ge=1, le=600)
-    max_tool_output_bytes: int = Field(default=120_000, ge=1_000, le=5_000_000)
-    max_subagents: int = Field(default=6, ge=1, le=20)
-    max_subagent_depth: int = Field(default=3, ge=1, le=10)
-    subagent_seconds: int = Field(default=60, ge=10, le=300)
+    max_seconds: int = Field(default=0, ge=0, le=86_400)
+    max_tool_calls: int = Field(default=200, ge=0, le=5_000)
+    max_model_rounds: int = Field(default=200, ge=0, le=5_000)
+    tool_timeout_seconds: int = Field(default=120, ge=1, le=3_600)
+    max_tool_output_bytes: int = Field(default=1_000_000, ge=1_000, le=20_000_000)
+    max_subagents: int = Field(default=20, ge=1, le=100)
+    max_subagent_depth: int = Field(default=5, ge=1, le=20)
+    subagent_seconds: int = Field(default=600, ge=10, le=3_600)
+    max_running_subagents: int = Field(default=32, ge=1, le=256)
 
 
 class TaskConfig(BaseModel):

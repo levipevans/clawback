@@ -56,7 +56,11 @@ class Runtime:
         self.policy: Policy
         self.sandbox: DockerSandbox
         self.dispatcher: ToolDispatcher
-        self.subagent_manager = SubagentManager(self._run_subagent, on_event=self._emit)
+        self.subagent_manager = SubagentManager(
+            self._run_subagent,
+            on_event=self._emit,
+            max_running=self.config.budgets.max_running_subagents,
+        )
         self._build_environment()
         self.scheduler = Scheduler(self, on_event=lambda text: self._emit(text))
 
@@ -177,7 +181,10 @@ class Runtime:
             raise BusyError("a scheduled cycle is running")
         try:
             self.cancel_event.clear()
-            deadline = time.monotonic() + self.config.budgets.max_seconds
+            budget_seconds = self.config.budgets.max_seconds
+            deadline = (
+                time.monotonic() + budget_seconds if budget_seconds > 0 else None
+            )
             result = self.agent.run(
                 prompt,
                 mode="interactive",

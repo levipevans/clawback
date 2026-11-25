@@ -119,7 +119,11 @@ class Scheduler:
                 mode="wakeup",
                 cycle_id=cycle_id,
                 broker=broker,
-                deadline=time.monotonic() + self.runtime.config.budgets.max_seconds,
+                deadline=(
+                    time.monotonic() + self.runtime.config.budgets.max_seconds
+                    if self.runtime.config.budgets.max_seconds > 0
+                    else None
+                ),
                 history=[],
                 cancel=self.runtime.cancel_event,
             )
@@ -187,7 +191,8 @@ class Scheduler:
         cycle_id = uuid.uuid4().hex[:12]
         self.runtime.cancel_event.clear()
         started = time.monotonic()
-        deadline = started + self.runtime.config.budgets.max_seconds
+        max_seconds = self.runtime.config.budgets.max_seconds
+        deadline = started + max_seconds if max_seconds > 0 else None
         self._last_cycle_at = time.time()
         self.runtime.controller.set(Status.RUNNING, f"cycle {cycle_id}")
         self.runtime.audit.record(
@@ -200,7 +205,7 @@ class Scheduler:
             for task in due:
                 if self.runtime.cancel_event.is_set():
                     break
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     self.runtime.audit.record("cycle.deadline", cycle_id=cycle_id)
                     break
                 self.runtime.audit.record("task.start", cycle_id=cycle_id, task=task.name)
