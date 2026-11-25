@@ -172,7 +172,7 @@ class ConsoleUI:
             ("/remove-root PATH", "remove a read or write grant"),
             ("/hide-root PATH", "hide a folder (empty mount)"),
             ("/unhide-root PATH", "undo a hide"),
-            ("/memory [show|clear|path]", "long-term memory file"),
+            ("/memory [show|clear|reset|path]", "long-term memory file"),
             ("/remember TEXT", "add a note to memory"),
             ("/email [status|check|poll]", "inbound email status, connectivity, one poll"),
             ("/new", "clear this session's conversation context"),
@@ -327,10 +327,15 @@ class ConsoleUI:
         if action == "path":
             self.console.print(str(self.runtime.memory_path))
             return
+        if action == "reset":
+            self.runtime.memory.reset()
+            self.runtime.audit.record("memory.reset")
+            self.console.print("memory reset to empty (header kept)")
+            return
         if action in ("clear", "wipe", "delete"):
             self.runtime.memory.clear()
             self.runtime.audit.record("memory.clear")
-            self.console.print("memory cleared")
+            self.console.print("memory file deleted")
             return
         text = self.runtime.memory.read()
         if not text:

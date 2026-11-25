@@ -85,3 +85,14 @@ def test_memory_clear(tmp_path):
     memory.clear()
     assert memory.read() == ""
     assert memory.size() == 0
+
+
+def test_memory_reset_keeps_header_but_removes_entries(tmp_path):
+    memory = MemoryStore(tmp_path / "memory.md")
+    memory.append_assistant("temporary note")
+    assert "temporary note" in memory.read()
+    memory.reset()
+    text = memory.read()
+    assert text.startswith("# Clawback memory")
+    assert "temporary note" not in text
+    assert memory.size() > 0

@@ -193,7 +193,11 @@ def cmd_memory(args: argparse.Namespace) -> int:
         return 0
     if args.action == "clear":
         memory.clear()
-        print("memory cleared")
+        print("memory file deleted")
+        return 0
+    if args.action == "reset":
+        memory.reset()
+        print("memory reset to empty (header kept)")
         return 0
     text = memory.read()
     print(text if text else "(memory is empty)")
@@ -378,7 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="check the environment")
 
     memory = sub.add_parser("memory", help="show or clear long-term memory")
-    memory.add_argument("action", nargs="?", choices=["show", "clear", "path"], default="show")
+    memory.add_argument("action", nargs="?", choices=["show", "clear", "reset", "path"], default="show")
 
     email_parser = sub.add_parser("email", help="inbound email status, check, or one poll")
     email_parser.add_argument(

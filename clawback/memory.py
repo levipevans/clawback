@@ -137,6 +137,11 @@ class MemoryStore:
             except OSError:
                 pass
 
+    def reset(self) -> None:
+        """Replace the file with just the header (empty of entries)."""
+        with self._lock:
+            self._write(HEADER)
+
     def size(self) -> int:
         try:
             return self.path.stat().st_size

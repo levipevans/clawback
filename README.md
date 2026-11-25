@@ -272,10 +272,12 @@ to project files, appends capped at 4 KB, and every call audited. Memory content
 is still treated as untrusted data by the model.
 
 * `/memory` or `uv run python clawback.py memory show` -- read it.
-* `/memory clear` or `uv run python clawback.py memory clear` -- forget everything.
+* `/memory reset` or `uv run python clawback.py memory reset` -- empty it, keeping
+  the header. This is the "start fresh" command.
+* `/memory clear` or `uv run python clawback.py memory clear` -- delete the file.
 * `/memory path` -- print the path.
 * `/remember TEXT` -- add a note.
-* `clawback wipe` also deletes it.
+* `clawback wipe` also clears it.
 
 The file is capped at roughly 64 KB; oldest entries are trimmed first. Memory is
 **untrusted data** as far as the model is concerned, and it is yours to edit or
