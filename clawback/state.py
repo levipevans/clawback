@@ -174,6 +174,27 @@ class StateStore:
             self._write()
             return True
 
+    def email_seen(self) -> list[str]:
+        with self._lock:
+            self._maybe_reload()
+            value = self._data.get("email_seen", [])
+            return [str(v) for v in value] if isinstance(value, list) else []
+
+    def is_email_seen(self, message_id: str) -> bool:
+        return bool(message_id) and message_id in self.email_seen()
+
+    def add_email_seen(self, message_id: str, cap: int = 500) -> None:
+        if not message_id:
+            return
+        with self._lock:
+            self._maybe_reload()
+            seen = self.email_seen()
+            if message_id in seen:
+                return
+            seen.append(message_id)
+            self._data["email_seen"] = seen[-cap:]
+            self._write()
+
     def wipe(self) -> None:
         with self._lock:
             self._data = {}

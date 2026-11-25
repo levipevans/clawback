@@ -52,11 +52,12 @@ class OpenRouterClient:
         tools: list[dict] | None = None,
         *,
         timeout: float = 90.0,
+        tool_choice: str | dict | None = None,
     ) -> LLMResponse:
         payload: dict[str, Any] = {"model": self.model, "messages": messages}
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = tool_choice or "auto"
 
         last_error = "unknown error"
         for attempt in range(self.max_retries + 1):

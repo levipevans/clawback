@@ -64,8 +64,9 @@ class ToolDispatcher:
         self.on_event = on_event
 
     # -- model-facing specs ----------------------------------------------
-    def tool_specs(self) -> list[dict]:
-        return schemas.tool_specs(self._email_enabled())
+    def tool_specs(self, mode: str = "interactive") -> list[dict]:
+        include_email = self._email_enabled() and mode != "email"
+        return schemas.tool_specs(include_email)
 
     def _email_enabled(self) -> bool:
         return bool(self.mailer and self.mailer.available())
@@ -82,7 +83,8 @@ class ToolDispatcher:
         deadline: float | None = None,
     ) -> ToolOutcome:
         started = time.time()
-        specs = schemas.by_name(self._email_enabled())
+        include_email = self._email_enabled() and mode != "email"
+        specs = schemas.by_name(include_email)
         spec = specs.get(name)
         if spec is None:
             return self._finish(

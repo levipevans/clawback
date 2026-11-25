@@ -23,6 +23,11 @@ DEFAULT_CONFIG = '''\
 #   CLAWBACK_SMTP_PASSWORD
 #   CLAWBACK_SMTP_FROM
 #   CLAWBACK_SMTP_SECURITY      starttls | ssl
+#   CLAWBACK_IMAP_HOST          optional, for inbound mail
+#   CLAWBACK_IMAP_PORT          default 993
+#   CLAWBACK_IMAP_USER
+#   CLAWBACK_IMAP_PASSWORD
+#   CLAWBACK_IMAP_SECURITY      ssl | starttls | none
 #
 # The model can only see the Docker sandbox. `sandbox_dir` is the ONE folder
 # it may write to. Leave it unset to use <profile>\\workspace.
@@ -56,10 +61,33 @@ tool_timeout_seconds = 30
 max_tool_output_bytes = 120000
 
 [email]
-# Email is off until you enable it and configure SMTP in the environment.
-# Every send still requires your explicit confirmation.
+# Outbound email is gated to the owner and the trusted list below.
+# Inbound email polls IMAP, screens unknown senders, and can reply.
 enabled = false
+
+# The assistant's own mailbox (used as From / IMAP user).
+address = ""
+
+# The owner. Always trusted; replies go here.
 recipient = ""
+
+# Additional senders treated as trusted (no classifier pass).
+trusted = []
+
+# Poll IMAP for incoming mail.
+inbound = false
+poll_minutes = 5
+
+# Require From / Return-Path / Sender / Reply-To consistency for trusted mail.
+require_header_match = true
+
+# Delete mail the classifier marks malicious. If false it is left in the inbox.
+delete_malicious = true
+
+# Reply automatically to trusted senders. Screened senders never get a reply.
+auto_reply = true
+
+max_body_bytes = 50000
 
 # Scheduled tasks are opt-in. A task without `enabled = true` never runs.
 [[tasks]]
@@ -104,15 +132,43 @@ class EmailConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    address: str = ""
     recipient: str = ""
+    trusted: list[str] = Field(default_factory=list)
+    inbound: bool = False
+    poll_minutes: int = Field(default=5, ge=1, le=1440)
+    require_header_match: bool = True
+    delete_malicious: bool = True
+    auto_reply: bool = True
+    max_body_bytes: int = Field(default=50_000, ge=1_000, le=1_000_000)
 
-    @field_validator("recipient")
+    @field_validator("recipient", "address")
     @classmethod
     def _looks_like_address(cls, value: str) -> str:
-        value = value.strip()
+        value = value.strip().lower()
         if value and "@" not in value:
-            raise ValueError("recipient must look like an email address")
+            raise ValueError("must look like an email address")
         return value
+
+    @field_validator("trusted")
+    @classmethod
+    def _trusted_addresses(cls, values: list[str]) -> list[str]:
+        out: list[str] = []
+        for value in values:
+            address = value.strip().lower()
+            if not address:
+                continue
+            if "@" not in address:
+                raise ValueError(f"trusted address is invalid: {value!r}")
+            if address not in out:
+                out.append(address)
+        return out
+
+    def allowed_recipients(self) -> set[str]:
+        values = set(self.trusted)
+        if self.recipient:
+            values.add(self.recipient)
+        return values
 
 
 class AppConfig(BaseModel):
@@ -189,4 +245,21 @@ def smtp_settings() -> dict[str, Any] | None:
         "password": os.environ.get("CLAWBACK_SMTP_PASSWORD", ""),
         "from_addr": os.environ.get("CLAWBACK_SMTP_FROM", "").strip(),
         "security": os.environ.get("CLAWBACK_SMTP_SECURITY", "starttls").strip().lower(),
+    }
+
+
+def imap_settings() -> dict[str, Any] | None:
+    host = os.environ.get("CLAWBACK_IMAP_HOST", "").strip()
+    if not host:
+        return None
+    try:
+        port = int(os.environ.get("CLAWBACK_IMAP_PORT", "993"))
+    except ValueError:
+        port = 993
+    return {
+        "host": host,
+        "port": port,
+        "user": os.environ.get("CLAWBACK_IMAP_USER", "").strip(),
+        "password": os.environ.get("CLAWBACK_IMAP_PASSWORD", ""),
+        "security": os.environ.get("CLAWBACK_IMAP_SECURITY", "ssl").strip().lower(),
     }

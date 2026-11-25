@@ -27,7 +27,7 @@ class RecordingDispatcher:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
 
-    def tool_specs(self):
+    def tool_specs(self, mode="interactive"):
         return [{"type": "function", "function": {"name": "read_file"}}]
 
     def execute(self, name, args, *, broker, cycle_id, mode, deadline=None):

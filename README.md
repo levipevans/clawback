@@ -1,5 +1,9 @@
 # Clawback
 
+<p align="center">
+  <img src="assets/logo.png" alt="Clawback logo: a grinning cartoon crab with its claws raised" width="220">
+</p>
+
 A small, security-first desktop assistant. Python, terminal-first, with a tray
 status icon. The model can *ask* for tools, but every tool runs inside a Docker
 container whose mounts are the only filesystem it can see.
@@ -164,6 +168,7 @@ Approve? [y/N]
 | `/unhide-root PATH` | undo a hide |
 | `/memory [show\|clear\|path]` | long-term memory file |
 | `/remember TEXT` | add a note to memory |
+| `/email [status\|check\|poll]` | inbound email status, connectivity, one poll |
 | `/new` | clear this session's conversation context |
 | `/log [n]` | recent activity |
 | `/wipe` | delete audit log, memory, and runtime state |
@@ -171,8 +176,8 @@ Approve? [y/N]
 | `/path` | print data locations |
 | `/quit` | stop and exit |
 
-CLI equivalents: `status`, `log`, `wipe`, `roots`, `tasks`, `memory`, `doctor`,
-`config`, `sandbox`.
+CLI equivalents: `status`, `log`, `wipe`, `roots`, `tasks`, `memory`, `email`,
+`doctor`, `config`, `sandbox`.
 
 ---
 
@@ -220,16 +225,21 @@ uv run python clawback.py tasks enable workspace-check
 
 * **Read** tools (list, read, stat, search, copy-from-read-root) run without
   confirmation.
-* **Consequential** tools require confirmation every time: `write_file`,
-  `append_file`, `make_dir`, `move_path`, `copy_path`, `delete_path`,
-  `run_bash`, `send_email`.
-* An approval is bound to a SHA-256 digest of the exact tool + arguments and
-  expires. Approving one action cannot authorize another.
+* **Consequential** tools are `write_file`, `append_file`, `make_dir`,
+  `move_path`, `copy_path`, `delete_path`, `run_bash`, `send_email`.
+* **Terminal sessions** ask you to confirm each consequential action. An
+  approval is bound to a SHA-256 digest of the exact tool + arguments and
+  expires.
+* **Scheduled cycles** refuse consequential actions -- nobody is there to
+  confirm them.
+* **Email sessions** auto-approve consequential actions by policy. The sandbox
+  still confines file operations, and `send_email` still cannot leave the
+  owner/trusted allowlist.
 * Denying an action tells the model to stop and report, not retry.
 * Adding a root or hiding a folder is an explicit owner action and is audited.
   Hiding is enforced at the mount layer.
-* Writable grants are mounted at `/rw/<name>`. They are still consequential:
-  every write, move, delete, and shell command needs confirmation.
+* Writable grants are mounted at `/rw/<name>`. Terminal sessions confirm each
+  write; email sessions auto-approve it. The sandbox still confines the path.
 
 `delete_path` moves things to a trash folder in the same writable root
 (`/work/.trash` or `/rw/<name>/.clawback-trash`) instead of unlinking them.
@@ -262,29 +272,90 @@ delete.
 
 ## Email (optional, off by default)
 
-Email is a host-side tool with a single-recipient allowlist and a mandatory
-confirmation before every send. It is only advertised to the model when it is
-fully configured.
+Clawback can send mail, and -- when enabled -- receive it.
+
+**Outbound.** `send_email` is a model tool. Recipients are limited to
+`recipient` (you) and the `trusted` list; arbitrary addresses are refused.
+Terminal sessions still confirm each send.
+
+**Inbound.** An IMAP poller checks unread mail every `poll_minutes`:
+
+1. Ignore our own address, auto-submitted/bulk mail, empty bodies, and
+   attachments.
+2. If the sender is on `trusted` and the headers agree (`From`, `Sender`,
+   `Return-Path`, `Reply-To`; any `spf/dkim/dmarc=fail` demotes it), start a
+   fresh agent session and auto-reply in the same thread.
+3. Otherwise, run a separate classifier session with exactly one tool,
+   `classify_email`:
+   * `malicious: true` -> delete the message from the mailbox;
+   * `safe` -> start a fresh agent session. No reply is sent to an unknown
+     sender;
+   * classifier failure -> fail closed: leave the message, mark it seen, audit.
+
+Each email is its own session; it does not share the terminal conversation. It
+does share `memory.md`.
+
+A whitelisted sender whose headers do not match is treated as untrusted and
+goes through the classifier.
+
+### Setup
+
+Environment variables (Windows user scope; reopen the terminal):
 
 ```powershell
+# SMTP (outbound)
 [Environment]::SetEnvironmentVariable("CLAWBACK_SMTP_HOST", "smtp.example.com", "User")
 [Environment]::SetEnvironmentVariable("CLAWBACK_SMTP_PORT", "587", "User")
-[Environment]::SetEnvironmentVariable("CLAWBACK_SMTP_USER", "you@example.com", "User")
+[Environment]::SetEnvironmentVariable("CLAWBACK_SMTP_USER", "clawback@example.com", "User")
 [Environment]::SetEnvironmentVariable("CLAWBACK_SMTP_PASSWORD", "...", "User")
-[Environment]::SetEnvironmentVariable("CLAWBACK_SMTP_FROM", "you@example.com", "User")
+[Environment]::SetEnvironmentVariable("CLAWBACK_SMTP_FROM", "clawback@example.com", "User")
 [Environment]::SetEnvironmentVariable("CLAWBACK_SMTP_SECURITY", "starttls", "User")  # or ssl
-```
 
-Then in `config.toml`:
+# IMAP (inbound)
+[Environment]::SetEnvironmentVariable("CLAWBACK_IMAP_HOST", "imap.example.com", "User")
+[Environment]::SetEnvironmentVariable("CLAWBACK_IMAP_PORT", "993", "User")
+[Environment]::SetEnvironmentVariable("CLAWBACK_IMAP_USER", "clawback@example.com", "User")
+[Environment]::SetEnvironmentVariable("CLAWBACK_IMAP_PASSWORD", "...", "User")
+[Environment]::SetEnvironmentVariable("CLAWBACK_IMAP_SECURITY", "ssl", "User")  # or starttls/none
+```
 
 ```toml
 [email]
 enabled = true
+address = "clawback@example.com"
 recipient = "you@example.com"
+trusted = ["you@example.com"]
+
+inbound = true
+poll_minutes = 5
+require_header_match = true
+delete_malicious = true
+auto_reply = true
+max_body_bytes = 50000
 ```
 
-The model cannot send to any other address. SMS, IRC, Matrix, and XMPP are not
-in v1.
+Check it:
+
+```powershell
+uv run python clawback.py email status
+uv run python clawback.py email check
+uv run python clawback.py email poll
+```
+
+`email check` connects to IMAP without processing. `email poll` processes one
+batch. In the console: `/email [status|check|poll]`.
+
+### Tradeoffs
+
+* Whitelisted senders bypass the classifier. If a trusted account is
+  compromised, it can drive the assistant.
+* The classifier is best-effort LLM screening, not a proof.
+* Email sessions auto-approve consequential tools. The sandbox still confines
+  file operations, and `send_email` cannot leave the owner/trusted allowlist,
+  so an injected email cannot exfiltrate to a stranger.
+* Attachments are ignored in v1. Plain text is preferred; HTML-only bodies are
+  converted to text.
+* SMS, IRC, Matrix, and XMPP remain out of scope.
 
 ---
 
@@ -295,7 +366,7 @@ Everything is under `%APPDATA%\Clawback`:
 | File | Purpose |
 |---|---|
 | `config.toml` | declarative configuration |
-| `state.json` | task toggles, last-run times, CLI-added roots |
+| `state.json` | task toggles, last-run times, CLI-added roots, seen email IDs |
 | `audit.jsonl` | append-only activity log (JSONL) |
 | `memory.md` | long-term interaction memory (editable, deletable) |
 | `workspace/` | the writable sandbox |
@@ -317,12 +388,13 @@ uv run pytest
 ```
 
 Unit tests cover the path policy, approval binding, scheduler budgets, audit
-redaction, config validation, session memory, the persistent memory file, and
-the agent loop (with a scripted model). The Docker integration tests prove the
-container properties: non-root, `/work` writable, writable grants, read-only
-roots, hidden-folder masking, absent host paths, no network, and
-structured-operation traversal rejection. They skip automatically if Docker is
-unavailable.
+redaction, config validation, session memory, the persistent memory file,
+inbound email parsing, header trust, classifier decisions, deletion/dedup, reply
+threading, and the agent loop (with a scripted model). The Docker integration
+tests prove the container properties: non-root, `/work` writable, writable
+grants, read-only roots, hidden-folder masking, absent host paths, no network,
+and structured-operation traversal rejection. They skip automatically if Docker
+is unavailable.
 
 ---
 
@@ -332,11 +404,15 @@ unavailable.
 * **No plugins**, no broad system access, no host shell.
 * **No SMS / IRC / Matrix / XMPP** yet.
 * **No cloud sync.** The profile is local.
+* **Inbound email is a command channel for trusted senders.** A compromised
+  trusted account can drive the assistant. Unknown senders are LLM-screened,
+  which is best-effort, not a proof. Attachments are ignored.
 * The model is external: prompts and tool output you send it go to OpenRouter.
   That is the only default network path; the sandbox itself has none.
 * Docker Desktop is a runtime dependency. The app fails closed without it.
 * The sandbox protects the host from the model. It does not make the model's
-  judgment trustworthy -- that is what the approval gate is for.
+  judgment trustworthy. Terminal approvals, the email allowlist, and the
+  classifier are the additional controls.
 
 ---
 
@@ -347,22 +423,36 @@ terminal / tray
       |
       v
   Runtime  ──  Scheduler (bounded wake cycles)
-      |            |
-      |            v
-      |         Agent loop  ──► OpenRouter (DeepSeek V4.1 Flash 1017)
-      |            |  ^
-      |            |  └── Conversation (session) + memory.md (long-term)
-      |            v
-      |      ToolDispatcher
-      |        | validate args (jsonschema)
-      |        | check path policy (deny by default)
-      |        | request approval for consequential tools
-      |        | audit decision
-      |        v
-      |   DockerSandbox  ──► container: /work rw, /rw/* rw, /ro/* ro, no network
+      |    └──  EmailInbox (IMAP)  ──►  classifier (unknown senders)
+      |                                   │
+      |                                   ├── safe ──────► Agent (fresh email session)
+      |                                   └── malicious ─► delete
+      v
+  Agent loop  ──► OpenRouter (DeepSeek V4.1 Flash 1017)
+      |  ^
+      |  └── Conversation (session) + memory.md (long-term)
+      v
+  ToolDispatcher
+      | validate args (jsonschema)
+      | check path policy (deny by default)
+      | apply session policy (terminal confirms / email auto-approves)
+      | audit decision
+      v
+  DockerSandbox  ──► container: /work rw, /rw/* rw, /ro/* ro, no network
       |
       └── AuditLog (JSONL)  ·  StateStore (JSON)  ·  MemoryStore (memory.md)  ·  config.toml
 ```
 
-Secrets (`OPENROUTER_API_KEY`, SMTP) are read from the environment and never
-written to the profile or the audit log.
+Secrets (`OPENROUTER_API_KEY`, SMTP/IMAP passwords) are read from the
+environment and never written to the profile or the audit log.
+
+---
+
+## Credits
+
+Logo: ["Cartoon crab png sticker, sea"](https://www.rawpixel.com/image/6482212/png-face-sticker)
+from Rawpixel, released under
+[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) (public domain).
+Found via [Openverse](https://openverse.org/), the Creative Commons search.
+The background was removed for use as a logo. CC0 does not require attribution;
+it is included as a courtesy.

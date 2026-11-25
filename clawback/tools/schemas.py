@@ -135,10 +135,13 @@ TOOLS: list[dict] = [
 
 EMAIL_TOOL = _fn(
     "send_email",
-    "Send an email to the owner. The recipient is fixed by configuration; "
-    "other addresses are refused. Requires owner confirmation for every send.",
+    "Send an email to the owner or a trusted address. Recipients outside the "
+    "allowlist are refused. Requires owner confirmation in interactive mode.",
     {
-        "to": {"type": "string", "description": "Must match the configured owner address."},
+        "to": {
+            "type": "string",
+            "description": "Must be the owner or an address on the trusted list.",
+        },
         "subject": {"type": "string", "maxLength": 200},
         "body": {"type": "string", "maxLength": 20000},
     },

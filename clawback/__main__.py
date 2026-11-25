@@ -14,7 +14,7 @@ from rich.table import Table
 
 from . import __version__, paths
 from .audit import AuditLog
-from .config import ConfigError, load_config
+from .config import ConfigError, imap_settings, load_config
 from .console import ConsoleUI
 from .memory import MemoryStore
 from .paths import is_sensitive_name, normalize
@@ -45,6 +45,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     runtime.set_output(ui._event)
     if not getattr(args, "no_scheduler", False):
         runtime.scheduler.start()
+    if runtime.config.email.inbound:
+        if runtime.start_inbox():
+            Console().print("[dim]inbound email polling started[/dim]")
+        else:
+            Console().print(
+                "[yellow]inbound email enabled but not ready; run `clawback email status`.[/yellow]"
+            )
     tray = None
     if not getattr(args, "no_tray", False):
         tray = Tray(runtime, on_quit=runtime.shutdown)
@@ -193,6 +200,41 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_email(args: argparse.Namespace) -> int:
+    runtime = Runtime()
+    email = runtime.config.email
+    if args.action == "status":
+        imap = imap_settings() or {}
+        rows = [
+            ("enabled", str(email.enabled)),
+            ("inbound", str(email.inbound)),
+            ("address", email.address or "(unset)"),
+            ("owner", email.recipient or "(unset)"),
+            ("trusted", ", ".join(sorted(email.allowed_recipients())) or "(none)"),
+            ("smtp", "configured" if runtime.mailer.available() else "missing"),
+            ("imap", imap.get("host", "missing")),
+            ("poll", f"{email.poll_minutes}m"),
+            ("auto_reply", str(email.auto_reply)),
+            ("delete_malicious", str(email.delete_malicious)),
+        ]
+        _table(rows, "email")
+        return 0
+
+    runtime.connect()
+    runtime.start_sandbox()
+    try:
+        if runtime.inbox is None:
+            print("inbound email is not available", file=sys.stderr)
+            return 1
+        if args.action == "check":
+            print(json.dumps(runtime.inbox.check(), indent=2))
+        else:
+            print(json.dumps(runtime.inbox.poll_once(), indent=2))
+        return 0
+    finally:
+        runtime.shutdown()
+
+
 def cmd_tasks(args: argparse.Namespace) -> int:
     profile = paths.profile_dir()
     config = load_config(profile)
@@ -253,6 +295,9 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
             )
             checks.append(("memory", True, f"{runtime.memory.size()} bytes at {runtime.memory_path}"))
             checks.append(("email", True, runtime.mailer.describe()))
+            imap = imap_settings() or {}
+            checks.append(("imap", bool(imap.get("host")), imap.get("host", "not configured")))
+            checks.append(("inbound", True, "on" if runtime.config.email.inbound else "off"))
             checks.append(("audit", True, str(runtime.audit_path)))
         except Exception as exc:
             checks.append(("runtime", False, f"{type(exc).__name__}: {exc}"))
@@ -335,6 +380,11 @@ def build_parser() -> argparse.ArgumentParser:
     memory = sub.add_parser("memory", help="show or clear long-term memory")
     memory.add_argument("action", nargs="?", choices=["show", "clear", "path"], default="show")
 
+    email_parser = sub.add_parser("email", help="inbound email status, check, or one poll")
+    email_parser.add_argument(
+        "action", nargs="?", choices=["status", "check", "poll"], default="status"
+    )
+
     config = sub.add_parser("config", help="show configuration")
     config.add_argument("action", nargs="?", choices=["show", "path"], default="show")
 
@@ -370,6 +420,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_doctor(args)
         if command == "memory":
             return cmd_memory(args)
+        if command == "email":
+            return cmd_email(args)
         if command == "config":
             return cmd_config(args)
         if command == "sandbox":

@@ -14,6 +14,7 @@ from .approvals import ApprovalBroker
 from .audit import AuditLog
 from .config import AppConfig, ConfigError, load_config, openrouter_api_key
 from .controller import Controller, Status
+from .inbound import EmailInbox
 from .llm.openrouter import OpenRouterClient
 from .memory import Conversation, MemoryStore
 from .policy import Policy, build_policy
@@ -46,6 +47,7 @@ class Runtime:
         self.sandbox_ok = False
         self.llm: OpenRouterClient | None = None
         self.agent: Agent | None = None
+        self.inbox: EmailInbox | None = None
         self._output: Callable[[str], None] | None = None
         self._env_lock = threading.RLock()
 
@@ -80,7 +82,25 @@ class Runtime:
             audit=self.audit,
             memory=self.memory,
         )
+        self.inbox = EmailInbox(
+            config=self.config,
+            state=self.state,
+            audit=self.audit,
+            mailer=self.mailer,
+            agent=self.agent,
+            llm=self.llm,
+            memory=self.memory,
+            controller=self.controller,
+            gate=self.gate,
+            cancel_event=self.cancel_event,
+            on_event=self._emit,
+        )
         self.audit.record("app.connect", model=self.config.model)
+
+    def start_inbox(self) -> bool:
+        if self.inbox is None:
+            return False
+        return self.inbox.start()
 
     def set_output(self, fn: Callable[[str], None] | None) -> None:
         self._output = fn
@@ -175,6 +195,11 @@ class Runtime:
     def shutdown(self) -> None:
         try:
             self.scheduler.stop()
+        except Exception:
+            pass
+        try:
+            if self.inbox is not None:
+                self.inbox.stop()
         except Exception:
             pass
         try:

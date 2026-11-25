@@ -24,3 +24,15 @@ def test_task_toggle_is_visible_to_a_running_instance(tmp_path):
     cli = StateStore(path)
     cli.set_task_enabled("digest", True)
     assert running.task_enabled("digest", False) is True
+
+
+def test_email_seen_persists_and_reloads(tmp_path):
+    path = tmp_path / "state.json"
+    first = StateStore(path)
+    first.add_email_seen("<m1@example.com>")
+    second = StateStore(path)
+    assert second.is_email_seen("<m1@example.com>") is True
+
+    second.add_email_seen("<m2@example.com>")
+    assert first.is_email_seen("<m2@example.com>") is True
+    assert first.is_email_seen("<missing@example.com>") is False

@@ -9,6 +9,7 @@ from clawback.config import (
     ConfigError,
     EmailConfig,
     TaskConfig,
+    imap_settings,
     load_config,
     openrouter_api_key,
     smtp_settings,
@@ -81,6 +82,44 @@ def test_missing_key_raises_a_clear_error(monkeypatch):
     with pytest.raises(ConfigError) as excinfo:
         openrouter_api_key()
     assert "OPENROUTER_API_KEY" in str(excinfo.value)
+
+
+def test_email_inbound_defaults():
+    config = AppConfig()
+    assert config.email.inbound is False
+    assert config.email.trusted == []
+    assert config.email.allowed_recipients() == set()
+    assert config.email.auto_reply is True
+
+
+def test_allowed_recipients_includes_owner_and_trusted():
+    config = EmailConfig(
+        recipient="owner@example.com", trusted=["friend@example.com"]
+    )
+    assert config.allowed_recipients() == {
+        "owner@example.com",
+        "friend@example.com",
+    }
+
+
+def test_imap_settings_from_environment(monkeypatch):
+    monkeypatch.setenv("CLAWBACK_IMAP_HOST", "imap.example.com")
+    monkeypatch.setenv("CLAWBACK_IMAP_PORT", "993")
+    monkeypatch.setenv("CLAWBACK_IMAP_USER", "clawback@example.com")
+    monkeypatch.setenv("CLAWBACK_IMAP_PASSWORD", "secret")
+    monkeypatch.setenv("CLAWBACK_IMAP_SECURITY", "ssl")
+    assert imap_settings() == {
+        "host": "imap.example.com",
+        "port": 993,
+        "user": "clawback@example.com",
+        "password": "secret",
+        "security": "ssl",
+    }
+
+
+def test_imap_is_none_without_host(monkeypatch):
+    monkeypatch.delenv("CLAWBACK_IMAP_HOST", raising=False)
+    assert imap_settings() is None
 
 
 def test_extra_config_keys_are_rejected(tmp_path):

@@ -137,6 +137,7 @@ class ConsoleUI:
             "log": self._cmd_log,
             "memory": self._cmd_memory,
             "remember": self._cmd_remember,
+            "email": self._cmd_email,
             "new": self._cmd_new,
             "wipe": self._cmd_wipe,
             "sandbox": self._cmd_sandbox,
@@ -173,6 +174,7 @@ class ConsoleUI:
             ("/unhide-root PATH", "undo a hide"),
             ("/memory [show|clear|path]", "long-term memory file"),
             ("/remember TEXT", "add a note to memory"),
+            ("/email [status|check|poll]", "inbound email status, connectivity, one poll"),
             ("/new", "clear this session's conversation context"),
             ("/log [n]", "recent activity"),
             ("/wipe", "delete audit log, memory, and runtime state"),
@@ -349,6 +351,22 @@ class ConsoleUI:
         self.runtime.memory.append_note(rest)
         self.runtime.audit.record("memory.note")
         self.console.print("noted in memory")
+
+    def _cmd_email(self, rest: str = "") -> None:
+        action = (rest or "status").strip().lower()
+        if self.runtime.inbox is None:
+            self.console.print("[dim]inbound email is not available[/dim]")
+            return
+        if action == "status":
+            self.console.print(self.runtime.inbox.status())
+            return
+        if action == "check":
+            self.console.print(self.runtime.inbox.check())
+            return
+        if action == "poll":
+            self.console.print(self.runtime.inbox.poll_once())
+            return
+        self.console.print("[red]usage: /email [status|check|poll][/red]")
 
     def _cmd_new(self, _rest: str = "") -> None:
         self.runtime.reset_conversation()
